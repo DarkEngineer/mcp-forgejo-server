@@ -81,18 +81,22 @@ public sealed class ForgejoMcpToolSurface
         [Description("Usernames to assign the issue to; each must exist on the instance.")] string[]? assignees = null,
         [Description("Milestone number to attach, when the repository uses milestones.")] int? milestone = null,
         CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(title, nameof(title));
-        var request = new CreateIssueRequest
+        => await CallAsync(async () =>
         {
-            Title = title,
-            Body = body,
-            Labels = labels ?? Array.Empty<string>(),
-            Assignees = assignees ?? Array.Empty<string>(),
-            Milestone = milestone,
-        };
-        return await CallAsync(() => _client.CreateIssueAsync(owner, name, request, cancellationToken), cancellationToken);
-    }
+            // Validation happens INSIDE the lambda so an invalid argument
+            // produces the standard {"error":{...}} payload (CallAsync catches
+            // ArgumentException) instead of a protocol-level exception.
+            ArgumentException.ThrowIfNullOrWhiteSpace(title, nameof(title));
+            var request = new CreateIssueRequest
+            {
+                Title = title,
+                Body = body,
+                Labels = labels ?? Array.Empty<string>(),
+                Assignees = assignees ?? Array.Empty<string>(),
+                Milestone = milestone,
+            };
+            return await _client.CreateIssueAsync(owner, name, request, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
 
     /// <summary>
     /// Lists issues of a repository (backing:

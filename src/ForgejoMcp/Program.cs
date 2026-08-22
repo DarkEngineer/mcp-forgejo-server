@@ -1,17 +1,21 @@
 // forgejo-mcp-server entry point.
 //
 // Wires the hosting builder for a stdio-transport MCP server that exposes the
-// ForgejoClient (previous task) as MCP tools (list_repos, get_repo,
-// create_issue, list_issues, list_pull_requests, get_file, list_commits) and
-// as MCP resources (forgejo://repo/{owner}/{name}, forgejo://instance).
+// ForgejoClient as MCP tools (list_repos, get_repo, create_issue, list_issues,
+// list_pull_requests, list_commits, get_file) and as MCP resources
+// (forgejo://repo/{owner}/{name}, forgejo://instance).
 //
-// Configuration is read from environment variables so the server can point at
-// any Forgejo instance without code changes:
+// Configuration precedence (highest wins):
+//   1. Environment variables      — FORGEJO_URL / FORGEJO_TOKEN /
+//      FORGEJO_USERNAME / FORGEJO_PASSWORD (explicitly mapped onto the
+//      "Forgejo" section, so they override the file)
+//   2. appsettings.{Environment}.json — per-environment overrides (next to the binary)
+//   3. appsettings.json           — repository-shipped defaults (next to the binary)
 //
-//   FORGEJO_URL       (required) base URL, e.g. https://git.home.internal
-//   FORGEJO_TOKEN     (token auth; default mode) personal access token
-//   FORGEJO_USERNAME  (basic auth; used with FORGEJO_PASSWORD)
-//   FORGEJO_PASSWORD  (basic auth; used with FORGEJO_USERNAME)
+// So a fresh clone runs with nothing but:
+//   export FORGEJO_URL=https://git.home.internal
+//   export FORGEJO_TOKEN=***
+//   dotnet run --project src/ForgejoMcp
 //
 // Auth precedence: FORGEJO_TOKEN > FORGEJO_USERNAME+FORGEJO_PASSWORD > anonymous.
 //
@@ -19,6 +23,8 @@
 // routed to stderr (see ConsoleLoggerOptions.LogToStandardErrorThreshold).
 using Forgejo.Client;
 using Forgejo.Mcp;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,49 +34,55 @@ using ModelContextProtocol.Server;
 const string ServerName = "forgejo-mcp-server";
 const string ServerVersion = "1.0.0";
 
-// ----- Configuration ----------------------------------------------------
-
-var urlEnv = Environment.GetEnvironmentVariable("FORGEJO_URL") ?? throw
-    new InvalidOperationException(
-        "FORGEJO_URL is not set. Point the server at a Forgejo instance, e.g. " +
-        "FORGEJO_URL=https://git.home.internal");
-
-Uri baseUrl;
-try
-{
-    baseUrl = new Uri(urlEnv, UriKind.Absolute);
-}
-catch (UriFormatException ex)
-{
-    throw new InvalidOperationException($"FORGEJO_URL '{urlEnv}' is not a valid absolute URL.", ex);
-}
-
-var token = Environment.GetEnvironmentVariable("FORGEJO_TOKEN");
-var username = Environment.GetEnvironmentVariable("FORGEJO_USERNAME");
-var password = Environment.GetEnvironmentVariable("FORGEJO_PASSWORD");
-
-ForgejoCredentials credentials;
-if (!string.IsNullOrWhiteSpace(token))
-{
-    credentials = ForgejoCredentials.ForToken(token!);
-}
-else if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password))
-{
-    credentials = ForgejoCredentials.ForBasic(username!, password!);
-}
-else
-{
-    credentials = ForgejoCredentials.Anonymous();
-}
-
-// Single shared client instance for the whole process. Tools and resources
-// both receive it (the SDK resolves tool constructor dependencies from the
-// DI container, so it is registered there too).
-var client = new ForgejoClient(baseUrl, credentials);
-
-// ----- Hosting ----------------------------------------------------------
-
 var builder = Host.CreateApplicationBuilder(args);
+
+// ----- Configuration ----------------------------------------------------
+// The generic Host resolves "appsettings.json" relative to the process
+// working directory, but MCP hosts spawn this server from an arbitrary CWD
+// (Claude Desktop, Claude Code, CI, …), so the bundled defaults must come
+// from the application base directory — where appsettings.json sits next to
+// ForgejoMcp.dll (CopyToOutputDirectory in the csproj).
+//
+// Effective precedence, highest wins:
+//   1. FORGEJO_URL / FORGEJO_TOKEN / FORGEJO_USERNAME / FORGEJO_PASSWORD
+//      environment variables (mapped explicitly onto the "Forgejo" section —
+//      a plain AddEnvironmentVariables() would expose them as FORGEJO_* keys,
+//      which do NOT bind to the Forgejo:Url property)
+//   2. appsettings.json / appsettings.{Environment}.json next to the binary
+//   3. the Host's CWD-sourced sources (kept for in-repo development)
+var baseDir = AppContext.BaseDirectory;
+builder.Configuration.Sources.Insert(
+    0, new JsonConfigurationSource
+    {
+        Path = "appsettings.json",
+        FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(baseDir),
+        ReloadOnChange = true,
+        Optional = true,
+    });
+var devSettings = $"appsettings.{builder.Environment.EnvironmentName}.json";
+if (devSettings != "appsettings.json")
+{
+    builder.Configuration.Sources.Insert(
+        0, new JsonConfigurationSource
+        {
+            Path = devSettings,
+            FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(baseDir),
+            ReloadOnChange = true,
+            Optional = true,
+        });
+}
+
+// ForgejoServerOptions.FromConfiguration binds the "Forgejo" section (Url,
+// Token, Username, Password, MaxRetries, RetryBaseDelaySeconds) from the
+// sources above. ApplyEnvironmentOverrides then layers the FORGEJO_*
+// environment variables on top (highest priority), so a fresh clone runs with:
+//     FORGEJO_URL=https://git.home.internal
+//     FORGEJO_TOKEN=***
+// BuildClient validates eagerly (required Url, token-XOR-basic auth) so a
+// misconfiguration fails fast at startup, not on the first tool call.
+var options = ForgejoServerOptions.ApplyEnvironmentOverrides(
+    ForgejoServerOptions.FromConfiguration(builder.Configuration));
+var client = options.BuildClient();
 
 // Stdio servers must keep stdout free for the protocol: route all console
 // logging to stderr and drop Information-level noise by default.
