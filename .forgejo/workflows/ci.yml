@@ -15,7 +15,10 @@ jobs:
 
       - name: Resolve SDK
         id: sdk
-        run: echo "version=$(grep -m1 TargetFramework src/ForgejoMcp/ForgejoMcp.csproj | sed -E 's/.*<TargetFramework>([^<]+)<.*/\1/')" >> "$GITHUB_OUTPUT"
+        # setup-dotnet wants `A.B`, `A.B.x`, `A.x` ... NOT the `net10.0` TFM.
+        # So: read the TFM from the project, strip the leading `net`, hand the
+        # bare major.minor (e.g. 10.0) to the action.
+        run: echo "version=$(grep -m1 TargetFramework src/ForgejoMcp/ForgejoMcp.csproj | sed -E 's/.*<TargetFramework>([^<]+)<.*/\1/' | sed -E 's/^net//')" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
