@@ -34,6 +34,46 @@ using ModelContextProtocol.Server;
 const string ServerName = "forgejo-mcp-server";
 const string ServerVersion = "1.0.0";
 
+// ----- CLI flags (handled before anything is constructed) ---------------
+// The stdio MCP host takes no CLI arguments in normal operation (MCP clients
+// pass none), but a standalone user typing `mcp-server --help` must get a
+// usage page instead of a configuration error — so `--help/-h` and
+// `--version` are answered before the client is validated.
+if (args.Length > 0 && (args[0] == "--help" || args[0] == "-h"))
+{
+    Console.WriteLine(
+        $"{ServerName} v{ServerVersion}\n" +
+        "MCP server exposing Forgejo/Gitea operations over stdio (NDJSON).\n" +
+        "MCP clients launch this process themselves; no flags are needed.\n\n" +
+        "Usage: forgejo-mcp-server [--help | --version]\n\n" +
+        "Flags:\n" +
+        "  -h, --help    Show this help and exit.\n" +
+        "  --version     Show the version and exit.\n\n" +
+        "Configuration (highest priority first):\n" +
+        "  1. Environment variables  FORGEJO_URL (required), FORGEJO_TOKEN, " +
+        "FORGEJO_USERNAME, FORGEJO_PASSWORD,\n" +
+        "                            FORGEJO_MAX_RETRIES, FORGEJO_RETRY_BASE_DELAY_SECONDS\n" +
+        "  2. appsettings.json / appsettings.{Environment}.json next to the binary\n\n" +
+        "Authentication (token XOR basic, never both):\n" +
+        "  FORGEJO_TOKEN                     = personal access token (recommended)\n" +
+        "  FORGEJO_USERNAME + FORGEJO_PASSWORD = HTTP basic auth (both required)\n" +
+        "  (neither set → anonymous, public repositories only)\n\n" +
+        "Example:\n" +
+        "  FORGEJO_URL=https://git.home.internal FORGEJO_TOKEN=*** forgejo-mcp-server\n\n" +
+        "MCP client registration (Hermes Agent):\n" +
+        "  hermes mcp add forgejo --command <path-to>/forgejo-mcp-server \\\n" +
+        "    --env FORGEJO_URL=https://git.home.internal FORGEJO_TOKEN=***\n\n" +
+        "Or any MCP host (JSON config):\n" +
+        "  { \"mcpServers\": { \"forgejo\": { \"command\": \"<path-to>/forgejo-mcp-server\", " +
+        "\"env\": { \"FORGEJO_URL\": \"https://git.home.internal\", \"FORGEJO_TOKEN\": \"***\" } } }");
+    Environment.Exit(0);
+}
+if (args.Length > 0 && args[0] == "--version")
+{
+    Console.WriteLine($"{ServerName} {ServerVersion}");
+    Environment.Exit(0);
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // ----- Configuration ----------------------------------------------------
