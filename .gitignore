@@ -10,6 +10,9 @@ obj/
 project.lock.json
 NuGetCache/
 
+# Python (smoke test)
+__pycache__/
+
 # Test results
 TestResults/
 coverage*.json

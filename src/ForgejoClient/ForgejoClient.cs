@@ -101,7 +101,7 @@ public sealed class ForgejoClient : IDisposable
     /// which is surfaced as <see cref="ListResult{T}.Total"/>.
     /// </remarks>
     public Task<ListResult<Repository>> ListRepositoriesAsync(
-        Page page = default,
+        Page? page = default,
         CancellationToken ct = default)
     {
         page ??= new Page();
@@ -120,8 +120,9 @@ public sealed class ForgejoClient : IDisposable
     }
 
     /// <summary>
-    /// Creates an issue in <c>owner/name</c> with <paramref name="title"/> — backing of
-    /// <c>create_issue</c> (a mutating operation; see <see cref="CreateIssueRequest"/>).
+    /// Creates an issue in <c>owner/name</c> from <paramref name="req"/> — backing of
+    /// <c>create_issue</c> (a mutating operation; see <see cref="CreateIssueRequest"/> for
+    /// the request shape, including the required <c>Title</c> field).
     /// </summary>
     /// <remarks>Back: <c>POST /repos/{owner}/{name}/issues</c>. Requires write permission.</remarks>
     public Task<Issue> CreateIssueAsync(string owner, string name, CreateIssueRequest req, CancellationToken ct = default)
@@ -143,8 +144,8 @@ public sealed class ForgejoClient : IDisposable
     public Task<ListResult<Issue>> ListIssuesAsync(
         string owner,
         string name,
-        IssueListOptions filters = default,
-        Page page = default,
+        IssueListOptions? filters = default,
+        Page? page = default,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
@@ -163,8 +164,8 @@ public sealed class ForgejoClient : IDisposable
     public Task<ListResult<PullRequest>> ListPullRequestsAsync(
         string owner,
         string name,
-        IssueListOptions filters = default,
-        Page page = default,
+        IssueListOptions? filters = default,
+        Page? page = default,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
@@ -218,8 +219,8 @@ public sealed class ForgejoClient : IDisposable
     public Task<ListResult<RepositoryCommit>> ListCommitsAsync(
         string owner,
         string name,
-        Page page = default,
-        CommitListOptions options = default,
+        Page? page = default,
+        CommitListOptions? options = default,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
@@ -254,7 +255,7 @@ public sealed class ForgejoClient : IDisposable
         }
     }
 
-    private async Task<ListResult<T>> SendPagedAsync<T>(string path, string query, Action<HttpRequestMessage>? extra, CancellationToken ct)
+    private async Task<ListResult<T>> SendPagedAsync<T>(string path, string? query, Action<HttpRequestMessage>? extra, CancellationToken ct)
     {
         var full = AppendQuery(path, query);
         var (json, total) = await SendAsyncCoreWithTotal(HttpMethod.Get, full, null, extra, ct).ConfigureAwait(false);
@@ -266,6 +267,7 @@ public sealed class ForgejoClient : IDisposable
     private async Task<(byte[] bytes, string contentType)> SendRawAsync(HttpMethod method, string path, CancellationToken ct)
     {
         var (bytes, status, contentType) = await SendAsyncCoreBytes(method, path, null, ct).ConfigureAwait(false);
+        bytes ??= [];
         if (status < 200 || status >= 300)
             throw new ForgejoException($"GET {PathOnly(path)} failed with HTTP {status} {HttpDescription(status)}.", status, responseBody: Encoding.UTF8.GetString(bytes));
         if (bytes.Length == 0)
@@ -426,7 +428,7 @@ public sealed class ForgejoClient : IDisposable
         return q < 0 ? path : path[..q];
     }
 
-    private static string AppendQuery(string path, string query)
+    private static string AppendQuery(string path, string? query)
     {
         if (string.IsNullOrEmpty(query))
             return path;

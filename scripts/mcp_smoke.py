@@ -17,10 +17,32 @@ Usage:
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 
+
+def find_dotnet_root() -> str | None:
+    """Locate a .NET runtime root for the apphost binary.
+
+    The apphost (``ForgejoMcp``) searches DOTNET_ROOT, then a system
+    default. On machines where the SDK was installed in a user directory
+    (e.g. ``~/.dotnet``) we discover that here so the smoke test works
+    without exporting DOTNET_ROOT manually.
+    """
+    if os.environ.get("DOTNET_ROOT"):
+        return os.environ["DOTNET_ROOT"]
+    if shutil.which("dotnet"):
+        p = os.path.realpath(shutil.which("dotnet"))
+        parent = os.path.dirname(p)
+        if os.path.basename(parent) == "dotnet":
+            return parent
+    candidates = [os.path.expanduser("~/.dotnet"), "/usr/share/dotnet", "/usr/lib/dotnet"]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
 
 def main() -> int:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,6 +56,9 @@ def main() -> int:
     env = dict(os.environ)
     env.setdefault("FORGEJO_URL", "https://forgejo.invalid")  # only needed so startup validates
     env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+    dotnet_root = find_dotnet_root()
+    if dotnet_root:
+        env["DOTNET_ROOT"] = dotnet_root
 
     proc = subprocess.Popen([bin_path], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -49,8 +74,7 @@ def main() -> int:
         while time.time() - t0 < timeout:
             line = proc.stdout.readline()
             if not line:
-                proc.stderr.close()
-                err = proc.stderr.read()
+                err = (proc.stderr.read() if proc.stderr and not proc.stderr.closed else "")
                 raise SystemExit(f"server closed stdout early; stderr={err!r}")
             msg = json.loads(line)
             if msg.get("id") == want_id:

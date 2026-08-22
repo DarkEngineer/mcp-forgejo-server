@@ -142,7 +142,7 @@ public sealed record PullRequestRef
 
 /// <summary>
 /// An issue on a repository. Forgejo models pull requests as issues that carry
-/// a <see cref="PullRequestMeta"/>; <see cref="IsPullRequest"/> reflects that.
+/// a <see cref="PullRequestRef"/>; <see cref="IsPullRequest"/> reflects that.
 /// </summary>
 public sealed record Issue
 {
