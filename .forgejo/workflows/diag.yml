@@ -1,0 +1,66 @@
+name: Diag (temp)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dbg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump environment + tools + auth probe
+        env:
+          HOME: /tmp
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "==================== ALL ENV VARS ===================="
+          for v in GITHUB_TOKEN GITHUB_API_URL GITHUB_SERVER_URL GITHUB_REPOSITORY \
+                   FORGEJO_TOKEN FORGEJO_API_URL FORGEJO_SERVER_URL FORGEJO_REPOSITORY \
+                   GITEA_TOKEN GITEA_API_URL GITEA_SERVER_URL GITEA_REPOSITORY \
+                   FORGEJO_RUNNER_VERSION ACT GITHUB_ACTION GITHUB_EVENT_NAME GITHUB_EVENT_PATH; do
+            val="${!v-<unset>}"
+            if [ "$val" = "<unset>" ]; then
+              echo "  $v = <unset>"
+            else
+              # redact token-like values partially
+              case "$val" in
+                *TOKEN*|*) ;;
+              esac
+              # if it looks like a token, print only length + first 4 chars
+              echo "  $v = $val (len=${#val})"
+            fi
+          done
+          echo "==================== TOOLS ===================="
+          for t in git git curl wget node npm python3 python tar sha256sum apt_get apt apk dnf yum unzip xz; do
+            p=$(command -v "$t" 2>/dev/null || echo "MISSING")
+            if [ "$p" = "MISSING" ]; then echo "  $t = MISSING"; else echo "  $t = $p"; fi
+          done
+          echo "  apt-get (command -v): $(command -v apt-get 2>/dev/null || echo MISSING)"
+          echo "==================== OS ===================="
+          cat /etc/os-release 2>/dev/null | tr -d '\0'
+          uname -a
+          echo "==================== AUTH PROBE (find server+token, hit API) ===================="
+          # Pick the first available (server, token) pair
+          SRV=""; TKN=""
+          for s in FORGEJO_SERVER_URL GITHUB_SERVER_URL GITEA_SERVER_URL FORGEJO_API_URL GITHUB_API_URL GITEA_API_URL; do
+            if [ -n "${!s-}" ] && [ -z "$SRV" ]; then SRV="${!s}"; SRVNAME="$s"; fi
+          done
+          for t in FORGEJO_TOKEN GITHUB_TOKEN GITEA_TOKEN; do
+            if [ -n "${!t-}" ] && [ -z "$TKN" ]; then TKN="${!t}"; TKNNAME="$t"; fi
+          done
+          echo "  SRV=${SRV-<none>} TKN=${TKN:+set (len=${#TKN})} (names: $SRVNAME / $TKNNAME)"
+          if [ -n "$SRV" ] && [ -n "$TKN" ]; then
+            # normalize SRV to include /api/v1 if it is a bare host
+            case "$SRV" in
+              */api/v1*) API="$SRV" ;;
+              *) API="$SRV/api/v1" ;;
+            esac
+            echo "  API base: $API"
+            echo "--- GET /version (token basic) ---"
+            curl -sS -m 20 -u "hermes-agent:***" "$API/version" -o /tmp/v.json -w 'HTTP %{http_code}\n' || { echo "curl failed rc=$?"; cat /tmp/v.json 2>/dev/null; }
+            head -c 300 /tmp/v.json 2>/dev/null; echo
+            echo "--- GET /user (token) ---"
+            curl -sS -m 20 -H "Authorization: token $TKN" "$API/user" -o /tmp/u.json -w 'HTTP %{http_code}\n' || true
+            head -c 200 /tmp/u.json 2>/dev/null; echo
+          fi
+          echo "==================== DONE ===================="
