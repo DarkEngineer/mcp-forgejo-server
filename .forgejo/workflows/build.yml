@@ -1,0 +1,82 @@
+name: Build & Publish
+
+# Builds the self-contained Linux distributable via scripts/package.sh on every
+# push to main.  For v* tag pushes it additionally creates a Forgejo release
+# for that tag attaching the tarball + its sha256 sidecar.  The release/attach
+# flow lives in scripts/publish_release.sh and uses the act-injected
+# FORGEJO_TOKEN (PAT for the `forgejo-actions` user) — no repo secrets needed.
+#
+# Proven on this runner (act v13.0.0, node:20-bookworm):
+#   - actions/checkout@v4       (runs 28/30/31)
+#   - actions/setup-dotnet@v4   (run 28: SDK installed, 34 tests passed)
+#   - FORGEJO_TOKEN (forgejo-actions task token: "Authorization: token ***
+#     GET /user -> 200; 35 MB release asset upload verified (probe runs)
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+jobs:
+  build-and-publish:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve SDK
+        id: sdk
+        # setup-dotnet wants the bare `A.B` (e.g. 10.0), not the `net10.0` TFM
+        # (ci.yml already uses this). Read the real TFM from the csproj.
+        run: echo "version=$(grep -m1 TargetFramework src/ForgejoMcp/ForgejoMcp.csproj | sed -E 's/.*<TargetFramework>([^<]+)<.*/\1/' | sed -E 's/^net//')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Build, test, package
+        # package.sh: restore + build + full test suite + smoke test, then
+        # `dotnet publish --self-contained` and tars the result into
+        # dist/forgejo-mcp-server-<ver>-linux-x64.tar.gz (+ .sha256).
+        run: |
+          set -uo pipefail
+          bash scripts/package.sh
+          echo "--- dist output ---"
+          ls -la dist/
+          echo "--- sha256 sidecar ---"
+          cat dist/*.sha256
+
+      - name: Publish Forgejo release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        # Tag = ref with the refs/tags/ prefix stripped.  GITHUB_REF is
+        # injected by act as a plain env var (verified in run 30); GitHub's
+        # ref_name expression is used when available.
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -uo pipefail
+          export RELEASE_TAG="${RELEASE_TAG:-${GITHUB_REF#refs/tags/}}"
+          : "${RELEASE_TAG?this step only runs on tag pushes; no tag name found}"
+          bash scripts/publish_release.sh
+
+      - name: Upload dist artifacts
+        # Mirrors the tarball to runner artifacts as a fallback if the
+        # release attach fails; the release is the canonical artifact.
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+          retention-days: 30
