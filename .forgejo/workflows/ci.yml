@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve SDK
+        id: sdk
+        run: echo "version=$(grep -m1 TargetFramework src/ForgejoMcp/ForgejoMcp.csproj | sed -E 's/.*<TargetFramework>([^<]+)<.*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Restore
+        run: dotnet restore ForgejoMcp.sln
+
+      - name: Build
+        run: dotnet build ForgejoMcp.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test ForgejoMcp.sln --configuration Release --no-build --verbosity normal
+
+      - name: Smoke test (MCP initialize + tools/list over stdio)
+        # FORGEJO_URL is required at startup; the smoke test only needs the
+        # protocol handshake, not a live API, so a dummy instance URL is enough.
+        # mcp_smoke.py keeps the server's stdin OPEN while it works (a plain
+        # `server < file` redirect EOFs stdin and the host exits before
+        # flushing its replies), then asserts the handshake + tool listing.
+        run: python3 scripts/mcp_smoke.py
