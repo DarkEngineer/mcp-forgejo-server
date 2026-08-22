@@ -1,0 +1,83 @@
+name: Diag2 (temp permissions probe)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  perm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo/org secrets (names only)
+        env:
+          HOME: /tmp
+        shell: bash
+        run: |
+          API="${FORGEJO_API_URL%/}"
+          AUTH="Authorization: token $FORGEJO_TOKEN"
+          echo "=== REPO SECRETS (names) ==="
+          curl -sS -m 20 -H "$AUTH" "$API/repos/dark-eternity/mcp-forgejo-server/actions/secrets"; echo
+          echo "=== ORG SECRETS (names) ==="
+          curl -sS -m 20 -H "$AUTH" "$API/orgs/dark-eternity/actions/secrets"; echo
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Release + attach round-trip (proves forgejo-actions write perms)
+        env:
+          HOME: /tmp
+        shell: bash
+        run: |
+          set -uo pipefail
+          TS=$(date +%s)
+          TAG="diag-tag-$TS"
+          REL="diag-rel-$TS"
+          FILE=/tmp/diag-artifact-$TS.tar.gz
+          echo "dummy-tarball-bytes-$TS" > "$FILE"
+          API="${FORGEJO_API_URL%/}"
+          AUTH="Authorization: token $FORGEJO_TOKEN"
+
+          cleanup() {
+            echo "=== CLEANUP ==="
+            TAGID=$(grep -oE '"id":[0-9]+' /tmp/rel2.json 2>/dev/null | head -1 | grep -oE '[0-9]+')
+            if [ -n "$TAGID" ]; then
+              ATTLIST=$(curl -sS -m 20 -H "$AUTH" "$API/repos/dark-eternity/mcp-forgejo-server/releases/$TAGID/assets" 2>/dev/null)
+              echo "assets before cleanup: $ATTLIST"
+              for attid in $(echo "$ATTLIST" | grep -oE '"id":[0-9]+' | grep -oE '[0-9]+'); do
+                echo "delete attachment $attid"
+                curl -sS -m 20 -o /dev/null -w "  HTTP %{http_code}\n" -X DELETE -H "$AUTH" "$API/repos/dark-eternity/mcp-forgejo-server/releases/$TAGID/assets/$attid"
+              done
+              echo "delete release $TAGID"
+              curl -sS -m 20 -o /dev/null -w "  HTTP %{http_code}\n" -X DELETE -H "$AUTH" "$API/repos/dark-eternity/mcp-forgejo-server/releases/$TAGID"
+            fi
+            echo "delete scratch tag $TAG"
+            git tag "$TAG" 2>/dev/null
+            git push origin --delete "refs/tags/$TAG" 2>&1 | tail -1
+            git tag -d "$TAG" 2>&1 | tail -1
+          }
+          trap cleanup EXIT
+
+          echo "=== create + push scratch tag $TAG ==="
+          git tag "$TAG"
+          git push origin "refs/tags/$TAG" 2>&1 | tail -2
+
+          echo "=== POST /releases (forgejo-actions token) ==="
+          REL_BODY=$(printf '{"tag_name":"%s","name":"%s","body":"diag scratch release","draft":true}' "$TAG" "$REL")
+          RESP=$(curl -sS -m 30 -o /tmp/rel2.json -w "%{http_code}" -X POST \
+            -H "$AUTH" -H "Content-Type: application/json" \
+            -d "$REL_BODY" "$API/repos/dark-eternity/mcp-forgejo-server/releases")
+          echo "HTTP $RESP"; head -c 400 /tmp/rel2.json 2>/dev/null; echo
+
+          REL_ID=$(grep -oE '"id":[0-9]+' /tmp/rel2.json 2>/dev/null | head -1 | grep -oE '[0-9]+')
+          echo "REL_ID=$REL_ID"
+          if [ -n "$REL_ID" ]; then
+            echo "=== POST /releases/$REL_ID/assets (attachment=@file, name=...) ==="
+            RESP2=$(curl -sS -m 30 -o /tmp/att.json -w "%{http_code}" -X POST \
+              -H "$AUTH" \
+              -F "name=$(basename $FILE)" \
+              -F "attachment=@$FILE" \
+              "$API/repos/dark-eternity/mcp-forgejo-server/releases/$REL_ID/assets")
+            echo "HTTP $RESP2"; head -c 500 /tmp/att.json 2>/dev/null; echo
+            echo "=== GET /releases/$REL_ID (assets array?) ==="
+            curl -sS -m 20 -H "$AUTH" "$API/repos/dark-eternity/mcp-forgejo-server/releases/$REL_ID" | tr ',' '\n' | grep -iE 'asset|download|name|size|browser' | head -20
+            echo "=== DONE ==="
+          fi
