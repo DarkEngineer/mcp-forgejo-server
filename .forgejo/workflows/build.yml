@@ -48,7 +48,7 @@ jobs:
           echo "--- sha256 sidecar ---"
           cat dist/*.sha256
 
-# Opcja A: Publikacja Release (Tarball + sidecar SHA256) za pomocą dedykowanej akcji
+      #Publikacja Release (Tarball + sidecar SHA256) za pomocą dedykowanej akcji
       - name: Publish Forgejo Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
