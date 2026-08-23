@@ -51,12 +51,14 @@ jobs:
       - name: Publish Forgejo release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/')
         env:
-          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Używamy wbudowanego tokena kontekstowego github.token
+          FORGEJO_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-          FORGEJO_API_URL: ${{ github.api_url }}
-          REPO_FULL_NAME: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
         run: |
           set -uo pipefail
+          export RELEASE_TAG="${RELEASE_TAG:-${GITHUB_REF#refs/tags/}}"
+          : "${RELEASE_TAG?this step only runs on tag pushes; no tag name found}"
           bash scripts/publish_release.sh
 
       - name: List dist artifacts
