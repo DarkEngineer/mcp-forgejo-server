@@ -48,18 +48,18 @@ jobs:
           echo "--- sha256 sidecar ---"
           cat dist/*.sha256
 
-      - name: Publish Forgejo release (tag pushes only)
+      #Publikacja Release (Tarball + sidecar SHA256) za pomocą dedykowanej akcji
+      - name: Publish Forgejo Release
         if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          draft: false
+          prerelease: false
         env:
-          # Używamy wbudowanego tokena kontekstowego github.token
-          FORGEJO_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          GITHUB_REF: ${{ github.ref }}
-        run: |
-          set -uo pipefail
-          export RELEASE_TAG="${RELEASE_TAG:-${GITHUB_REF#refs/tags/}}"
-          : "${RELEASE_TAG?this step only runs on tag pushes; no tag name found}"
-          bash scripts/publish_release.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: List dist artifacts
         run: ls -la dist/
