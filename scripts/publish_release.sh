@@ -127,10 +127,20 @@ fi
 python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(f"release: {d[\"id\"]} {d[\"tag_name\"]} -> {d.get(\"html_url\")}")
+print(f"release: {d.get(\"id\")} {d.get(\"tag_name\")} -> {d.get(\"html_url\")}".replace("\"", ""))
+' "$FINAL_JSON" 2>/dev/null || python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+rid = d.get("id")
+tag = d.get("tag_name")
+url = d.get("html_url")
+print(f"release: {rid} {tag} -> {url}")
 for a in d.get("assets", []):
-    print(f"  asset: {a[\"name\"]} ({a[\"size\"]} bytes) -> {a.get(\"browser_download_url\")}")
+    name = a.get("name")
+    size = a.get("size")
+    dl = a.get("browser_download_url")
+    print(f"  asset: {name} ({size} bytes) -> {dl}")
 ' "$FINAL_JSON"
-rm -f "$FINAL_JSON"
 
+rm -f "$FINAL_JSON"
 echo "=== done: release $TAG is live with its artifacts" >&2
