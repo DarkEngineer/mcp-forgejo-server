@@ -18,10 +18,6 @@ env:
   DOTNET_NOLOGO: "1"
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
 
-# Nadanie uprawnień systemowemu tokenowi github.token do tworzenia wydań
-permissions:
-  contents: write
-
 jobs:
   build-and-publish:
     name: Build & Publish
