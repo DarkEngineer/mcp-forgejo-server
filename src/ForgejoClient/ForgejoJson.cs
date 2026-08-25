@@ -48,6 +48,7 @@ public static class ForgejoJson
         PropertyNamingPolicy = SnakeCaseNamingPolicy.Instance,
         PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new ListResultConverterFactory() },
     };
 
     /// <summary>Serializes <paramref name="value"/> to a JSON string using <see cref="Default"/>.</summary>

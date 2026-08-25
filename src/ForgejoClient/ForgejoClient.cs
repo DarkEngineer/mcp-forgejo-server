@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 /// <summary>
 /// A typed, retrying HTTP client for the Forgejo REST API (v1).
@@ -105,7 +106,7 @@ public sealed class ForgejoClient : IDisposable
         CancellationToken ct = default)
     {
         page ??= new Page();
-        return SendPagedAsync<Repository>("/user/repos", page.ToQuery(), null, ct);
+        return SendPagedAsync<Repository>("/user/repos", page.ToQuery(), page, null, ct);
     }
 
     /// <summary>
@@ -154,7 +155,7 @@ public sealed class ForgejoClient : IDisposable
         page ??= new Page();
         var q = filters.ToQuery();
         var full = q.Length == 0 ? page.ToQuery() : $"{q}&{page.ToQuery()}";
-        return SendPagedAsync<Issue>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/issues", full, null, ct);
+        return SendPagedAsync<Issue>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/issues", full, page, null, ct);
     }
 
     /// <summary>
@@ -174,7 +175,7 @@ public sealed class ForgejoClient : IDisposable
         page ??= new Page();
         var q = filters.ToQuery();
         var full = q.Length == 0 ? page.ToQuery() : $"{q}&{page.ToQuery()}";
-        return SendPagedAsync<PullRequest>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls", full, null, ct);
+        return SendPagedAsync<PullRequest>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls", full, page, null, ct);
     }
 
     /// <summary>
@@ -228,7 +229,108 @@ public sealed class ForgejoClient : IDisposable
         page ??= new Page();
         options ??= new CommitListOptions();
         var b = string.IsNullOrEmpty(options.Branch) ? "" : $"&branch={Uri.EscapeDataString(options.Branch)}";
-        return SendPagedAsync<RepositoryCommit>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/commits?{page.ToQuery()}{b}", null, null, ct);
+        return SendPagedAsync<RepositoryCommit>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/commits?{page.ToQuery()}{b}", null, page, null, ct);
+    }
+
+    /// <summary>
+    /// Gets a single issue (or pull request, in Forgejo's model) — backing of
+    /// <c>get_issue</c>. Errors: 404 (not found / no permission).
+    /// </summary>
+    /// <remarks>Back: <c>GET /repos/{o}/{n}/issues/{index}</c>.</remarks>
+    public Task<Issue> GetIssueAsync(string owner, string name, int index, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "issue index must be >= 1.");
+        return SendAsync<Issue>(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/issues/{index}", ct: ct);
+    }
+
+    /// <summary>
+    /// Gets a single pull request — backing of <c>get_pull_request</c>.
+    /// Errors: 404 (not found / no permission).
+    /// </summary>
+    /// <remarks>Back: <c>GET /repos/{o}/{n}/pulls/{index}</c>.</remarks>
+    public Task<PullRequest> GetPullRequestAsync(string owner, string name, int index, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "pull request index must be >= 1.");
+        return SendAsync<PullRequest>(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}", ct: ct);
+    }
+
+    /// <summary>
+    /// Lists the changed files of a pull request with per-file churn stats —
+    /// backing of <c>get_pull_request_files</c>. Per-file <c>patch</c> is set
+    /// only when the instance embeds it (the acceptance instance omits it).
+    /// Errors: 404 (not found / no permission).
+    /// </summary>
+    /// <remarks>Back: <c>GET /repos/{o}/{n}/pulls/{index}/files</c>.</remarks>
+    public async Task<IReadOnlyList<PullRequestFile>> GetPullRequestFilesAsync(
+        string owner, string name, int index, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "pull request index must be >= 1.");
+        var json = await SendAsyncCore(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}/files", null, null, ct).ConfigureAwait(false);
+        return ForgejoJson.FromJson<IReadOnlyList<PullRequestFile>>(json)
+            ?? throw new ForgejoException($"PR files response for {PathOnly($"/repos/{owner}/{name}/pulls/{index}/files")} was not a JSON array.");
+    }
+
+    /// <summary>
+    /// Fetches the combined unified diff of a pull request as raw text —
+    /// the single-round-trip alternative to per-file patches. Backs the
+    /// <c>diff</c> output of <c>get_pull_request_files</c>.
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/{o}/{n}/pulls/{index}.diff</c> (Forgejo/Gitea).
+    /// Returns the raw unified-patch body; 404 if the PR is missing.
+    /// </remarks>
+    public async Task<string> GetPullRequestDiffAsync(string owner, string name, int index, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "pull request index must be >= 1.");
+        return await SendTextAsync(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}.diff", ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Lists repository releases (asset metadata only; bodies are not
+    /// fetched) — backing of <c>list_releases</c>. Errors: 404.
+    /// </summary>
+    /// <remarks>Back: <c>GET /repos/{o}/{n}/releases</c>; paged.</remarks>
+    public Task<ListResult<Release>> ListReleasesAsync(
+        string owner, string name, Page? page = default, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        page ??= new Page();
+        return SendPagedAsync<Release>($"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/releases", page.ToQuery(), page, null, ct);
+    }
+
+    /// <summary>
+    /// Lists the contents of a directory (or the repository root) — backing
+    /// of <c>list_file_tree</c>. Each entry carries name/type/path/sha/size.
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/{o}/{n}/contents/{path}</c> (empty path = root).
+    /// Returns the single-page array — repository directories are flat in a
+    /// single Gitea/Forgejo response, so no page cursor.
+    /// </remarks>
+    public async Task<IReadOnlyList<ContentEntry>> ListFileTreeAsync(
+        string owner, string name, string? path = null, string? branch = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var rel = (path ?? string.Empty).TrimStart('/');
+        var qs = branch is null ? "" : $"?ref={Uri.EscapeDataString(branch)}";
+        var p = $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/contents/{rel}{qs}";
+        var json = await SendAsyncCore(HttpMethod.Get, p, null, null, ct).ConfigureAwait(false);
+        return ForgejoJson.FromJson<IReadOnlyList<ContentEntry>>(json)
+            ?? throw new ForgejoException($"Contents response for {PathOnly(p)} was not a JSON array.");
     }
 
     // ---------------------------------------------------------------------------
@@ -255,18 +357,21 @@ public sealed class ForgejoClient : IDisposable
         }
     }
 
-    private async Task<ListResult<T>> SendPagedAsync<T>(string path, string? query, Action<HttpRequestMessage>? extra, CancellationToken ct)
+    private async Task<ListResult<T>> SendPagedAsync<T>(string path, string? query, Page page, Action<HttpRequestMessage>? extra, CancellationToken ct)
     {
         var full = AppendQuery(path, query);
-        var (json, total) = await SendAsyncCoreWithTotal(HttpMethod.Get, full, null, extra, ct).ConfigureAwait(false);
+        var (json, total, link) = await SendAsyncCoreWithTotal(HttpMethod.Get, full, null, extra, ct).ConfigureAwait(false);
         var items = ForgejoJson.FromJson<IReadOnlyList<T>>(json)
             ?? throw new ForgejoException($"List response for {path} was not a JSON array.");
-        return new ListResult<T>(items, total);
+        return new ListResult<T>(items, total)
+        {
+            NextPageHint = ComputeNextPage(page, link, items.Count),
+        };
     }
 
     private async Task<(byte[] bytes, string contentType)> SendRawAsync(HttpMethod method, string path, CancellationToken ct)
     {
-        var (bytes, status, contentType) = await SendAsyncCoreBytes(method, path, null, ct).ConfigureAwait(false);
+        var (bytes, status, contentType, _, _) = await SendAsyncCoreBytes(method, path, null, ct).ConfigureAwait(false);
         bytes ??= [];
         if (status < 200 || status >= 300)
             throw new ForgejoException($"GET {PathOnly(path)} failed with HTTP {status} {HttpDescription(status)}.", status, responseBody: Encoding.UTF8.GetString(bytes));
@@ -277,12 +382,21 @@ public sealed class ForgejoClient : IDisposable
 
     private async Task<string> SendAsyncCore(
         HttpMethod method, string path, object? body, Action<HttpRequestMessage>? extra, CancellationToken ct)
-        => (await SendAsyncCoreWithTotal(method, path, body, null!, ct).ConfigureAwait(false)).json;
+        => (await SendAsyncCoreWithTotal(method, path, body, null!, ct).ConfigureAwait(false)).Json;
 
-    private async Task<(string json, long? total)> SendAsyncCoreWithTotal(
+    /// <summary>
+    /// Sends a JSON request and returns the response body decoded as UTF-8
+    /// text — for endpoints whose payload is not a typed document (e.g. the
+    /// <c>.diff</c> unified-patch endpoint). Errors: <see cref="ForgejoException"/>
+    /// for non-2xx statuses / transport failures (same contract as <see cref="SendAsync{T}"/>).
+    /// </summary>
+    private Task<string> SendTextAsync(HttpMethod method, string path, CancellationToken ct)
+        => SendAsyncCore(method, path, null, null, ct);
+
+    private async Task<(string Json, long? Total, string? Link)> SendAsyncCoreWithTotal(
         HttpMethod method, string path, object? body, Action<HttpRequestMessage>? extra, CancellationToken ct)
     {
-        var (bytes, status, contentType) = await SendAsyncCoreBytes(method, path, body, ct, extra).ConfigureAwait(false);
+        var (bytes, status, contentType, totalCountHeader, link) = await SendAsyncCoreBytes(method, path, body, ct, extra).ConfigureAwait(false);
         if (status < 200 || status >= 300)
             throw new ForgejoException(
                 $"{method} {PathOnly(path)} failed with HTTP {status} {HttpDescription(status)}.",
@@ -291,13 +405,17 @@ public sealed class ForgejoClient : IDisposable
                 Encoding.UTF8.GetString(bytes ?? Array.Empty<byte>()));
 
         var json = bytes is null ? string.Empty : Encoding.UTF8.GetString(bytes);
+        // Prefer the instance's paging header (the canonical source of truth);
+        // fall back to an embedded "total" field for shapes that carry one.
         long? total = null;
-        if (TryExtractTotal(bytes, out var t))
+        if (!string.IsNullOrEmpty(totalCountHeader) && long.TryParse(totalCountHeader, out var t))
             total = t;
-        return (json, total);
+        else if (TryExtractTotal(bytes, out var t2))
+            total = t2;
+        return (json, total, link);
     }
 
-    private async Task<(byte[]? bytes, int status, string contentType)> SendAsyncCoreBytes(
+    private async Task<(byte[]? bytes, int status, string contentType, string? totalCount, string? link)> SendAsyncCoreBytes(
         HttpMethod method, string path, object? body, CancellationToken ct, Action<HttpRequestMessage>? extra = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -348,8 +466,14 @@ public sealed class ForgejoClient : IDisposable
                 var contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
                 var text = bytes is null || bytes.Length == 0 ? null : Encoding.UTF8.GetString(bytes);
 
-                // Capture Retry-After before the response is disposed.
+                // Capture paging + retry hints before the response is disposed.
                 lastRetryAfter = ParseRetryAfter(response);
+                var totalCount = response.Headers.TryGetValues("x-total-count", out var tc)
+                    ? string.Join(",", tc)
+                    : null;
+                var link = response.Headers.TryGetValues("Link", out var lk)
+                    ? string.Join(",", lk)
+                    : null;
 
                 if (status < 200 || status >= 300)
                 {
@@ -361,7 +485,7 @@ public sealed class ForgejoClient : IDisposable
                         errorCode: TryExtractErrorCode(bytes),
                         responseBody: text);
                 }
-                return (bytes ?? Array.Empty<byte>(), status, contentType);
+                return (bytes ?? Array.Empty<byte>(), status, contentType, totalCount, link);
             }
         }
 
@@ -435,6 +559,66 @@ public sealed class ForgejoClient : IDisposable
         var sep = path.Contains('?') ? "&" : "?";
         return $"{path}{sep}{query}";
     }
+
+    /// <summary>
+    /// Derives the 1-based next-page hint for a list response.
+    /// Preference order:
+    /// <list type="number">
+    /// <item>A <c>Link: rel="next"</c> header (the canonical source) — extract
+    /// its <c>page</c> query parameter.</item>
+    /// <item>Heuristic: the current page came back full (<paramref name="count"/>
+    /// equals the page <c>Size</c>), so a next page may exist → <c>Number + 1</c>.</item>
+    /// <item>A short page (<paramref name="count"/> &lt; <c>Size</c>) → no
+    /// successor → <c>null</c>.</item>
+    /// </list>
+    /// </summary>
+    private static int? ComputeNextPage(Page page, string? link, int count)
+    {
+        // 1) Link header wins.
+        if (!string.IsNullOrEmpty(link) && TryParseLinkPage(link, out var linkPage) && linkPage >= 1)
+            return linkPage;
+        // 2) Heuristic.
+        if (count < page.Size)
+            return null;
+        return page.Number + 1;
+    }
+
+    /// <summary>
+    /// Extracts a 1-based <c>page</c> query parameter from the first
+    /// <c>rel="next"</c> target in a <c>Link</c> header value. Returns
+    /// <c>false</c> when the header has no <c>rel="next"</c> target or its
+    /// <c>page</c> parameter is absent/non-numeric.
+    /// </summary>
+    private static bool TryParseLinkPage(string link, out int page)
+    {
+        page = 0;
+        // The standard shape is <https://…/…?page=2&limit=30>; rel="next".
+        // Scan each comma-separated field and pick the one tagged rel="next".
+        var match = LinkNextRegex.Match(link);
+        if (!match.Success)
+            return false;
+        var uriPart = match.Groups[1].Value.Trim().Trim('<', '>');
+        var q = uriPart.IndexOf('?', StringComparison.Ordinal);
+        if (q < 0)
+            return false;
+        foreach (var pair in uriPart[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var kv = pair.Split('=', 2);
+            if (kv.Length == 2 &&
+                string.Equals(kv[0], "page", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(kv[1], out var p))
+            {
+                page = p;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex LinkNextRegex =
+        new(@"<([^>]*?)>\s*;\s*rel=""next""",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private static bool IsRetryable(int status)
         => status == 429 || (status >= 500 && status < 600);

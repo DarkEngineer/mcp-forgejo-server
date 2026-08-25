@@ -105,7 +105,7 @@ Przykładowa, udana odpowiedź:
 
 ```
 initialize OK: forgejo-mcp-server v1.0.0 (2025-06-18)
-tools (7): list_repos, create_issue, list_commits, list_issues, get_repo, get_file, list_pull_requests
+tools (12): list_repos, create_issue, list_commits, list_issues, get_repo, get_file, list_pull_requests, get_issue, get_pull_request, get_pull_request_files, list_releases, list_file_tree
 resources: instance
 resource templates: repo/{owner}/{name}
 ```
@@ -162,9 +162,42 @@ Pełna lista — parametry opisują dokładnie interfejs w
 | `get_repo`              | `GET /repos/{owner}/{name}`                    | `owner`, `name`                                                                  |
 | `create_issue`          | `POST /repos/{owner}/{name}/issues`            | `owner`, `name`, `title`, `body`, `labels[]`, `assignees[]`, `milestone`         |
 | `list_issues`           | `GET /repos/{owner}/{name}/issues`             | `owner`, `name`, `state=open\|closed\|all`, `assigned_by[]`, `label[]`, `page`, `limit` |
+| `get_issue`             | `GET /repos/{owner}/{name}/issues/{index}`     | `owner`, `name`, `index`                                                         |
 | `list_pull_requests`    | `GET /repos/{owner}/{name}/pulls`              | `owner`, `name`, `state`, `assigned_by[]`, `label[]`, `page`, `limit`             |
+| `get_pull_request`      | `GET /repos/{owner}/{name}/pulls/{index}`      | `owner`, `name`, `index`                                                         |
+| `get_pull_request_files`| `GET /repos/{owner}/{name}/pulls/{index}/files` (+ `.../pulls/{index}.diff`, gdy `show_diff=true`) | `owner`, `name`, `index`, `show_diff` |
 | `list_commits`          | `GET /repos/{owner}/{name}/commits`            | `owner`, `name`, `branch`, `page`, `limit`                                        |
+| `list_releases`         | `GET /repos/{owner}/{name}/releases`           | `owner`, `name`, `page`, `limit` (meta-dane assetów: nazwa/URL/rozmiar — nigdy treść) |
 | `get_file`              | `GET /repos/{owner}/{name}/raw/{path}`         | `owner`, `name`, `path`, `branch`                                                 |
+| `list_file_tree`        | `GET /repos/{owner}/{name}/contents/{path}`    | `owner`, `name`, `path` (pusta = katalog główny), `branch`                       |
+
+### Paginacja (kontrakt `page` / `next_page`)
+
+Wszystkie narzędzia listujące akceptują `page` (numer strony, od 1,
+domyślnie `1`) i `limit` (rozmiar strony, domyślnie 30; góra strony
+wystawianej przez instancję: 50). Odpowiedź to koperta:
+
+```jsonc
+{ "items": [ ... ], "count": 2, "next_page": null, "total": 2 /* tylko gdy instancja raportuje */ }
+```
+
+- `items` / `count` — zawsze obecne.
+- `total` — obecna tylko wtedy, gdy instancja wyśle nagłówek
+  `x-total-count` (lub pole `total` w ciele). Instancje, które tego nie
+  wysyłają, po prostu go pomijają.
+- `next_page` — **zawsze obecna**, wartość `int` lub `null`:
+  - `null` ⇒ widziano już wszystkie strony (przerywaj iterację),
+  - numer ⇒ przekaż go jako `page` kolejnego wywołania tego samego narzędzia.
+
+Wyliczanie `next_page`: (1) jeśli instancja wyśle nagłówek
+`Link: <…?page=N>; rel="next"`, bierze się `N`; (2) w przeciwnym razie
+strona krótsza niż `limit` ⇒ `null`, a strona pełna (`count == limit`) ⇒
+`page + 1`. Dzięki temu listy są wiarygodne też na instancjach, które nie
+zwracają `total` (np. ta produkcyjna).
+
+`list_file_tree` nie jest stronowany — katalogi Forgejo/Gitea zwracane są
+jako jedna, płaska lista (`{path, entries}`), więc nie ma `page`
+/`next_page`.
 
 ### Przykłady wywołań (jsonrpc 2.0 / MCP `tools/call`)
 
