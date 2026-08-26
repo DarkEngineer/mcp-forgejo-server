@@ -333,6 +333,210 @@ public sealed class ForgejoClient : IDisposable
             ?? throw new ForgejoException($"Contents response for {PathOnly(p)} was not a JSON array.");
     }
 
+    /// <summary>
+    /// Lists the repository's branches — backing of <c>list_branches</c>.
+    /// Each entry carries the branch name plus tip-commit id/message (subject
+    /// line only) so an agent can navigate without a second call.
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/{o}/{n}/branches</c>(?limit=100). The endpoint is
+    /// not paged on the API (a single array is returned), so this returns a
+    /// plain list, not a <c>ListResult</c> envelope. Errors: 404 (repo not
+    /// found / no permission).
+    /// </remarks>
+    public async Task<IReadOnlyList<Branch>> ListBranchesAsync(
+        string owner, string name, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var json = await SendAsyncCore(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/branches?limit=100", null, null, ct).ConfigureAwait(false);
+        var raw = ForgejoJson.FromJson<IReadOnlyList<BranchWire>>(json)
+            ?? throw new ForgejoException($"{PathOnly($"/repos/{owner}/{name}/branches")} response was not a JSON array.");
+        return raw.Select(ToBranch).ToList();
+    }
+
+    /// <summary>
+    /// Gets a single branch — backing of <c>get_branch</c>.
+    /// Errors: 404 (branch / repo not found or no permission).
+    /// </summary>
+    /// <remarks>Back: <c>GET /repos/{o}/{n}/branches/{name}</c>. Branch names
+    /// may contain slashes (e.g. <c>feature/x</c>); only the first segment is
+    /// split into the path, the remainder is re-escaped in place.</remarks>
+    public async Task<Branch> GetBranchAsync(string owner, string name, string branch, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(branch);
+        var clean = branch.TrimStart('/');
+        var json = await SendAsyncCore(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/branches/{Uri.EscapeDataString(clean)}", null, null, ct).ConfigureAwait(false);
+        var wire = ForgejoJson.FromJson<BranchWire>(json)
+            ?? throw new ForgejoException($"{PathOnly($"/repos/{owner}/{name}/branches/{branch}")} response was not an object.");
+        return ToBranch(wire);
+    }
+
+    private static Branch ToBranch(BranchWire w)
+    {
+        var message = string.IsNullOrEmpty(w.Commit?.Message)
+            ? null
+            : (w.Commit.Message.Split('\n')[0].TrimEnd('\r').Trim());
+        return new Branch
+        {
+            Name = w.Name,
+            CommitId = w.Commit?.Id ?? string.Empty,
+            CommitMessage = string.IsNullOrEmpty(message) ? null : message,
+            CommitUrl = w.Commit?.Url,
+        };
+    }
+
+    /// <summary>
+    /// Lists the repository's issue labels — backing of <c>list_labels</c>.
+    /// Returns id, name, colour, description.
+    /// </summary>
+    /// <remarks>Back: <c>GET /repos/{o}/{n}/labels</c>. Single-array, not paged
+    /// (a repository's label set is small); a plain list is returned. Errors: 404.</remarks>
+    public async Task<IReadOnlyList<Label>> ListLabelsAsync(
+        string owner, string name, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var json = await SendAsyncCore(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/labels", null, null, ct).ConfigureAwait(false);
+        return ForgejoJson.FromJson<IReadOnlyList<Label>>(json)
+            ?? throw new ForgejoException($"{PathOnly($"/repos/{owner}/{name}/labels")} response was not a JSON array.");
+    }
+
+    /// <summary>
+    /// Creates an issue label — backing of <c>create_label</c> (mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>POST /repos/{o}/{n}/labels</c> (201 on success). Some
+    /// Forgejo/Gitea flavours answer a duplicate name with <c>409</c>; others
+    /// (including the acceptance instance) allow duplicate names and would
+    /// otherwise return 201 — so the idempotency guarantee lives on the MCP
+    /// surface (dedupe against <see cref="ListLabelsAsync"/> before POST),
+    /// not here. Errors: 404 (repo), 409 (name collision, flavour-dependent).
+    /// </remarks>
+    public Task<Label> CreateLabelAsync(string owner, string name, CreateLabelRequest req, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(req);
+        if (string.IsNullOrWhiteSpace(req.Name))
+            throw new ArgumentException("CreateLabelRequest.Name must not be empty.", nameof(req));
+        if (string.IsNullOrWhiteSpace(req.Color))
+            throw new ArgumentException("CreateLabelRequest.Color must not be empty (use a #rrggbb hex colour).", nameof(req));
+        return SendAsync<Label>(HttpMethod.Post, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/labels", req, ct);
+    }
+
+    /// <summary>
+    /// Updates an issue — backing of <c>update_issue</c> (mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>PATCH /repos/{o}/{n}/issues/{index}</c>. Verb discovery on the
+    /// acceptance instance (live, 2026-08-26): <c>POST</c> and <c>PUT</c> both
+    /// return <c>405 Method Not Allowed</c> with <c>Allow: GET, PATCH,
+    /// DELETE</c>; <c>PATCH</c> returns <c>201</c> with the updated issue.
+    /// This Gitea-compatible build therefore uses PATCH — not POST, not PUT —
+    /// and the MCP <c>update_issue</c> tool documents that choice.
+    /// The <see cref="UpdateIssueRequest"/> payload is sparse: only the
+    /// supplied fields change. Label mutation is by <em>id</em>
+    /// (<c>labels</c> = replace the set, <c>add_label_ids</c> /
+    /// <c>remove_label_ids</c> = incremental). Assignees are logins; an empty
+    /// <c>assignees</c> list is only sent when the caller explicitly cleared
+    /// them (the MCP surface enforces that opt-in). Errors: 404, 422 (bad
+    /// state/assignee/label).
+    /// </remarks>
+    public Task<Issue> UpdateIssueAsync(string owner, string name, int index, UpdateIssueRequest req, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(req);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "issue number must be >= 1.");
+
+        // Build a sparse wire body: only present (non-null / non-empty) fields
+        // are sent, so an update to just `state` does not accidentally clear
+        // the title or reset labels. `ClearAssignees` is a client-side opt-in
+        // flag and never goes on the wire.
+        var wire = new Dictionary<string, object?>();
+        if (!string.IsNullOrWhiteSpace(req.Title))
+            wire["title"] = req.Title;
+        if (req.Body is not null)
+            wire["body"] = req.Body;
+        if (!string.IsNullOrWhiteSpace(req.State))
+            wire["state"] = req.State;
+        if (req.Assignees is { Count: > 0 })
+            wire["assignees"] = req.Assignees;
+        else if (req.Assignees is { Count: 0 } && req.ClearAssignees)
+            wire["assignees"] = System.Array.Empty<string>();
+        if (req.MilestoneId.HasValue)
+            wire["milestone_id"] = req.MilestoneId.Value;
+        if (req.Labels is not null)
+            wire["labels"] = req.Labels;
+        if (req.AddLabelIds is { Count: > 0 })
+            wire["add_label_ids"] = req.AddLabelIds;
+        if (req.RemoveLabelIds is { Count: > 0 })
+            wire["remove_label_ids"] = req.RemoveLabelIds;
+        if (wire.Count == 0)
+            throw new ArgumentException(
+                "UpdateIssueRequest has no mutable field set. Provide at least one of: title, body, state, assignees (with clear_assignees=true to unassign), milestone_id, labels, add_label_ids, remove_label_ids.",
+                nameof(req));
+
+        return SendAsync<Issue>(HttpMethod.Patch, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/issues/{index}", wire, ct);
+    }
+
+    /// <summary>
+   /// Adds a comment to an issue (or PR) — backing of <c>add_issue_comment</c>
+    /// (mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>POST /repos/{o}/{n}/issues/{index}/comments</c> (201). The
+    /// wire field is <c>body</c> (Markdown) — the acceptance instance
+    /// rejects <c>{"content": …}</c> with <c>422 [Body]: Required</c>, so
+    /// <see cref="AddIssueCommentRequest"/> carries <c>Body</c>. Returns the
+    /// created comment (id, user, created_at, html_url). Errors: 404 (issue).
+    /// </remarks>
+    public Task<IssueComment> AddIssueCommentAsync(string owner, string name, int index, AddIssueCommentRequest req, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(req);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "issue number must be >= 1.");
+        if (string.IsNullOrEmpty(req.Body))
+            throw new ArgumentException("AddIssueCommentRequest.Body must not be empty (the API demands the `body` field).", nameof(req));
+        return SendAsync<IssueComment>(HttpMethod.Post, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/issues/{index}/comments", req, ct);
+    }
+
+    /// <summary>
+    /// Creates a pull request — backing of <c>create_pull_request</c>
+    /// (mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>POST /repos/{o}/{n}/pulls</c> (201 with the created PR).
+    /// When the <c>head</c> (or <c>base</c>) branch does not exist the
+    /// acceptance instance answers <c>404</c> with an <c>errors[]</c> array
+    /// (<c>could not find '…' to be a commit, branch or tag</c>); other
+    /// flavours may answer <c>422</c>. Both surface as
+    /// <see cref="ForgejoException"/> (code <c>not_found</c> /
+    /// <c>http_422</c>) and the MCP tool maps them to a structured
+    /// error envelope. Minimal payload: title, body, base, head, draft — no
+    /// labels / assignees / milestone.
+    /// </remarks>
+    public Task<PullRequest> CreatePullRequestAsync(string owner, string name, CreatePullRequestRequest req, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(req);
+        if (string.IsNullOrWhiteSpace(req.Title))
+            throw new ArgumentException("CreatePullRequestRequest.Title must not be empty.", nameof(req));
+        if (string.IsNullOrWhiteSpace(req.Base))
+            throw new ArgumentException("CreatePullRequestRequest.Base must not be empty (target branch name).", nameof(req));
+        if (string.IsNullOrWhiteSpace(req.Head))
+            throw new ArgumentException("CreatePullRequestRequest.Head must not be empty (source branch, or owner:branch).", nameof(req));
+        return SendAsync<PullRequest>(HttpMethod.Post, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls", req, ct);
+    }
+
+
     // ---------------------------------------------------------------------------
     // Wire / retry / error pipeline
     // ---------------------------------------------------------------------------
@@ -758,3 +962,85 @@ public sealed record CreateIssueRequest
     /// <summary>Milestone number, when the repository has milestones.</summary>
     public long? Milestone { get; init; }
 }
+
+/// <summary>
+/// Wire form of a branch endpoint entry: <c>{ name, commit: { id, message,
+/// url, … } }</c>. The public <see cref="Branch"/> is a flatter, first-line-only
+/// projection of this shape. Kept as raw JSON so future Forgejo revisions
+/// keep deserialising even if they add fields.
+/// </summary>
+public sealed record BranchWire
+{
+    /// <summary>Branch name.</summary>
+    public string Name { get; init; } = null!;
+
+    /// <summary>Nested tip-commit (id/message/url).</summary>
+    public BranchWireCommit? Commit { get; init; }
+}
+
+/// <summary>Nested commit of <see cref="BranchWire"/> (subset of fields).</summary>
+public sealed record BranchWireCommit
+{
+    /// <summary>Full SHA.</summary>
+    public string? Id { get; init; }
+
+    /// <summary>Full commit message (subject + body).</summary>
+    public string? Message { get; init; }
+
+    /// <summary>Commit page URL.</summary>
+    public string? Url { get; init; }
+}
+
+/// <summary>
+/// Mutation payload for <see cref="ForgejoClient.UpdateIssueAsync"/>.
+/// Maps to the sparse <c>PATCH /repos/{o}/{n}/issues/{index}</c> body.
+/// Only the non-<c>null</c> fields are sent. Labels are mutated by <em>id</em>
+/// (callers are expected to use <c>list_labels</c> first to obtain ids).
+/// </summary>
+public sealed record UpdateIssueRequest
+{
+    /// <summary>New title (set to non-empty to change).</summary>
+    public string? Title { get; init; }
+
+    /// <summary>New body (Markdown; set to non-null to change).</summary>
+    public string? Body { get; init; }
+
+    /// <summary>New state: <c>open</c> or <c>closed</c>.</summary>
+    public string? State { get; init; }
+
+    /// <summary>
+    /// Replace the issue's assignee set with exactly these logins.
+    /// An empty list is only valid here when <see cref="ClearAssignees"/> is
+    /// also true (see the MCP surface opt-in contract) — otherwise passing
+    /// an empty list without the flag is rejected on the tool side.
+    /// </summary>
+    public IReadOnlyList<string>? Assignees { get; init; }
+
+    /// <summary>
+    /// Explicit opt-in to clear the assignee set to zero. When <c>true</c>,
+    /// <see cref="Assignees"/> (even empty) is transmitted as-is. When
+    /// <c>false</c> (default), an empty <see cref="Assignees"/> list is
+    /// dropped from the payload to avoid accidental unassignment.
+    /// </summary>
+    public bool ClearAssignees { get; init; }
+
+    /// <summary>
+    /// Milestone id to set (id; obtain from the instance's milestones or use
+    /// the issue's current milestone id to preserve it).
+    /// </summary>
+    public long? MilestoneId { get; init; }
+
+    /// <summary>
+    /// Replace the issue's label set with exactly these label <em>ids</em>
+    /// (caller must <c>list_labels</c> first). When <c>null</c>, labels are
+    /// left untouched.
+    /// </summary>
+    public IReadOnlyList<long>? Labels { get; init; }
+
+    /// <summary>Label ids to ADD (incremental; do not remove others).</summary>
+    public IReadOnlyList<long>? AddLabelIds { get; init; }
+
+    /// <summary>Label ids to REMOVE (incremental; do not change others).</summary>
+    public IReadOnlyList<long>? RemoveLabelIds { get; init; }
+}
+

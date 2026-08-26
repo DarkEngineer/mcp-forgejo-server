@@ -278,6 +278,253 @@ public sealed class ForgejoMcpToolSurface
             };
         }, cancellationToken);
 
+    /// <summary>
+    /// Lists the repository's branches (backing:
+    /// <c>GET /repos/{owner}/{name}/branches</c>). Each entry carries the
+    /// branch name plus the tip commit id and the first line of the tip
+    /// commit message — enough to see what each branch points at without
+    /// another call.
+    /// </summary>
+    [McpServerTool(Name = "list_branches", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Lists the branches of a repository (GET /repos/{o}/{n}/branches): each entry has `name`, `commit_id` (full SHA of the tip commit), `commit_message` (first line of the tip commit subject), and `commit_url`. Not paged — a branch list is small by nature. Errors with code `not_found` (HTTP 404) when the repo is missing or not visible to the token.")]
+    public async Task<string> ListBranches(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            var branches = await _client.ListBranchesAsync(owner, name, cancellationToken).ConfigureAwait(false);
+            return branches;
+        }, cancellationToken);
+
+    /// <summary>
+    /// Gets a single branch (backing: <c>GET /repos/{o}/{n}/branches/{name}</c>).
+    /// Returns the same shape as one entry of <c>list_branches</c>.
+    /// </summary>
+    [McpServerTool(Name = "get_branch", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Gets one branch (GET /repos/{o}/{n}/branches/{name}): `name`, `commit_id`, `commit_message` (first line of the tip commit subject), `commit_url`. Branch names may contain slashes (e.g. `feature/x`). Errors with code `not_found` (HTTP 404) when the branch or repo does not exist for this token.")]
+    public async Task<string> GetBranch(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Branch name (e.g. `main`, `feature/x`).")] string branch,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(branch, nameof(branch));
+            return await _client.GetBranchAsync(owner, name, branch, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Lists the repository's issue labels (backing:
+    /// <c>GET /repos/{owner}/{name}/labels</c>). Each entry carries id, name,
+    /// colour, description — the id is what <c>update_issue</c> needs for its
+    /// `labels` / `add_label_ids` / `remove_label_ids` arguments.
+    /// </summary>
+    [McpServerTool(Name = "list_labels", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Lists the labels of a repository (GET /repos/{o}/{n}/labels): each entry has `id`, `name`, `color`, `description`. Use `id` when mutating labels via `update_issue` (which takes label ids, not names). Not paged — a repo's label set is small by nature. Errors with code `not_found` (HTTP 404) when the repo is missing or not visible.")]
+    public async Task<string> ListLabels(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            return await _client.ListLabelsAsync(owner, name, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Creates an issue label (backing: <c>POST /repos/{owner}/{name}/labels</c>).
+    /// Idempotent by name: the MCP surface checks the existing label set first
+    /// and, on collision, returns
+    /// <c>{created:false, existing:{id,name,color,description}}</c> without
+    /// creating a duplicate — covers both the case where the API would 201 a
+    /// colliding name (this acceptance instance) and the case where the API
+    /// 409s it (other Forgejo/Gitea flavours).
+    /// </summary>
+    [McpServerTool(Name = "create_label", Destructive = true, Idempotent = true, OpenWorld = true, ReadOnly = false)]
+    [Description("Creates a label in the given repository (POST /repos/{o}/{n}/labels). `name` and `color` (#rrggbb hex) are required; `description` is optional. Idempotency by name: if a label with the same `name` already exists the tool returns `{created:false, existing:{id,name,color,description}}` without creating a duplicate, regardless of whether the instance would otherwise answer 201 or 409. On success returns `{created:true, label:{…}}` with the full label object. Errors with `not_found` (404) when the repo is missing.")]
+    public async Task<string> CreateLabel(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Label name (required). Distinct per repository.")] string labelName,
+        [Description("Label colour in #rrggbb hex (required).")] string color,
+        [Description("Human-readable description (optional).")] string? description = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(labelName, nameof(labelName));
+            ArgumentException.ThrowIfNullOrWhiteSpace(color, nameof(color));
+            // Idempotency by name. The acceptance instance does not enforce
+            // uniqueness on POST /labels (it answers 201 and creates a
+            // duplicate), so we detect the collision ourselves by listing
+            // first. On flavours that DO enforce uniqueness this path also
+            // works — the pre-check finds the existing label before a 409.
+            var existingLabels = await _client.ListLabelsAsync(owner, name, cancellationToken).ConfigureAwait(false);
+            var existing = existingLabels.FirstOrDefault(l =>
+                string.Equals(l?.Name, labelName, StringComparison.Ordinal));
+            if (existing is not null)
+            {
+                return new CreateLabelResult
+                {
+                    Created = false,
+                    Existing = new LabelView
+                    {
+                        Id = existing.Id,
+                        Name = existing.Name,
+                        Color = existing.Color,
+                        Description = existing.Description,
+                    },
+                };
+            }
+            var req = new CreateLabelRequest
+            {
+                Name = labelName,
+                Color = color,
+                Description = description,
+            };
+            var created = await _client.CreateLabelAsync(owner, name, req, cancellationToken).ConfigureAwait(false);
+            return new CreateLabelResult
+            {
+                Created = true,
+                Existing = null,
+                Label = new LabelView
+                {
+                    Id = created.Id,
+                    Name = created.Name,
+                    Color = created.Color,
+                    Description = created.Description,
+                },
+            };
+        }, cancellationToken);
+
+    /// <summary>
+    /// Updates an issue in a repository (backing:
+    /// <c>PATCH /repos/{owner}/{name}/issues/{index}</c>).
+    /// <em>PATCH</em> — not POST, not PUT: the acceptance instance rejects
+    /// both POST and PUT with 405 and advertises <c>Allow: GET, PATCH,
+    /// <c>DELETE</c>; PATCH returns 201. See the <c>update_issue</c> notes in
+    /// the README's "Mutacje i idempotentność (Tier 2)" section.
+    /// </summary>
+    [McpServerTool(Name = "update_issue", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Updates a repository issue (PATCH /repos/{o}/{n}/issues/{index}). Only the supplied fields are modified. `index` is the issue number shown in the UI — the same number `list_issues` returns, not a global id. Accepted fields: `title`, `body`, `state` (open|closed), `assignees` (list of logins), `clear_assignees` (explicit true to unassign — empty `assignees` without the flag is dropped rather than transmitted), `milestone_id`, `labels` (list of label IDs = replace the set), `add_label_ids` (list of IDs to add), `remove_label_ids` (list of IDs to remove). At least one field must be present. Errors with `not_found` (404) when the issue doesn't exist, `unauthorized` (401) / `forbidden` (403) for auth, and `http_405` if a future instance build rejects PATCH (fallback to POST/PUT is out of scope — this build's instance requires PATCH).")]
+    public async Task<string> UpdateIssue(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Issue number within the repository (>= 1) — the same number `list_issues` shows in `number`.")] int index,
+        [Description("New title (optional; omit to keep).")] string? title = null,
+        [Description("New body in Markdown (optional; omit to keep).")] string? body = null,
+        [Description("New state: `open` or `closed` (optional).")] string? state = null,
+        [Description("New assignee logins (set semantics: the issue ends up with exactly these; omit / null to keep).")] string[]? assignees = null,
+        [Description("Explicit opt-in to clear the assignees to zero. Without this flag, an empty `assignees` list is dropped rather than transmitted, to avoid accidental unassignment.")] bool clear_assignees = false,
+        [Description("Milestone id to set (optional).")] long? milestone_id = null,
+        [Description("Label ids to set (set semantics: the issue ends up with exactly these; caller must call `list_labels` first to obtain ids).")] long[]? labels = null,
+        [Description("Label ids to ADD (incremental).")] long[]? add_label_ids = null,
+        [Description("Label ids to REMOVE (incremental).")] long[]? remove_label_ids = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(owner, nameof(owner));
+            ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(name));
+            if (index < 1)
+                throw new ArgumentException("index must be >= 1.", nameof(index));
+            if (state is not null && state.Length > 0
+                && !state.Equals("open", StringComparison.Ordinal)
+                && !state.Equals("closed", StringComparison.Ordinal))
+                throw new ArgumentException("state must be 'open' or 'closed'.", nameof(state));
+            if (clear_assignees && assignees is { Length: > 0 })
+                throw new ArgumentException("clear_assignees=true cannot be combined with a non-empty assignees list.", nameof(clear_assignees));
+
+            var req = new UpdateIssueRequest
+            {
+                Title = title,
+                Body = body,
+                State = state,
+                Assignees = assignees ?? [],
+                ClearAssignees = clear_assignees,
+                MilestoneId = milestone_id,
+                Labels = labels,
+                AddLabelIds = add_label_ids,
+                RemoveLabelIds = remove_label_ids,
+            };
+            return await _client.UpdateIssueAsync(owner, name, index, req, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Adds a Markdown comment to an issue (or PR) — backing:
+    /// <c>POST /repos/{o}/{n}/issues/{index}/comments</c>.
+    /// </summary>
+    [McpServerTool(Name = "add_issue_comment", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Adds a comment to an issue or PR (POST /repos/{o}/{n}/issues/{index}/comments). The wire field is `content` per the README's wording, and the acceptance instance expects the request body key to be `body` (422 `[Body]: Required` when we sent `content`) — this tool uses `content` at the tool boundary and sends it as `body` on the wire. Returns the created comment object with `id`, `user`, `created_at`, `html_url`.")]
+    public async Task<string> AddIssueComment(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Issue number within the repository (>= 1).")] int index,
+        [Description("Comment body in Markdown (required).")] string content,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(content, nameof(content));
+            var req = new AddIssueCommentRequest { Body = content };
+            return await _client.AddIssueCommentAsync(owner, name, index, req, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Creates a pull request (backing: <c>POST /repos/{o}/{n}/pulls</c>).
+    /// Minimal surface — no labels/assignees/milestone selection, per the
+    /// task scope. Returns the full created PR document.
+    /// </summary>
+    [McpServerTool(Name = "create_pull_request", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Creates a pull request in the given repository (POST /repos/{o}/{n}/pulls). `title`, `base` (target branch), `head` (source branch or `owner:branch` for cross-repo) are required; `body` (Markdown) and `draft` (bool) are optional. No labels/assignees/milestone — the surface is deliberately minimal. On success returns the created PR's identity: `id`, `number`, `html_url`, `state`, `draft`, `title`, `base_ref`, `head_ref`, `created_at`. Missing branch: the acceptance instance answers 404 (some flavours 422) with its `errors[]` body — the result is an error envelope with code `not_found` / `http_422`, the server's message verbatim, and a hint to check both branches with `list_branches`.")]
+    public async Task<string> CreatePullRequest(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("PR title (required).")] string title,
+        [Description("Target branch name (required).")] string @base,
+        [Description("Source branch — bare name for same-repo `base` or `owner:branch` for cross-repo (required).")] string head,
+        [Description("PR body in Markdown (optional).")] string? body = null,
+        [Description("Open as draft (optional, defaults to false on the wire).")] bool? draft = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(title, "title");
+            ArgumentException.ThrowIfNullOrWhiteSpace(@base, "base");
+            ArgumentException.ThrowIfNullOrWhiteSpace(head, "head");
+            var req = new CreatePullRequestRequest
+            {
+                Title = title,
+                Body = body,
+                Base = @base,
+                Head = head,
+                Draft = draft,
+            };
+            try
+            {
+                var created = await _client.CreatePullRequestAsync(owner, name, req, cancellationToken).ConfigureAwait(false);
+                return new CreatePullRequestResult
+                {
+                    Id = created.Id,
+                    Number = created.Number,
+                    HtmlUrl = created.HtmlUrl,
+                    State = created.State,
+                    Draft = created.Draft,
+                    Title = created.Title,
+                    BaseRef = created.Base?.Ref,
+                    HeadRef = created.Head?.Ref,
+                    CreatedAt = created.CreatedAt,
+                };
+            }
+            catch (ForgejoException e) when (e.StatusCode is 404 or 422)
+            {
+                // Missing-branch / missing-repo: rethrow with an actionable
+                // hint so the standard error envelope (CallAsync → ErrorJson)
+                // reports code `not_found` / `http_422` plus the server's
+                // verbatim message and a concrete next step the agent can relay.
+                var hint = e.StatusCode == 404
+                    ? " The `head` or `base` branch does not exist on the instance — verify with list_branches before retrying, and check that `head` has at least one commit not on `base`."
+                    : " The PR body/refs were rejected by the server — inspect the server response above and fix the offending field.";
+                throw new ForgejoException(e.Message + hint, e.StatusCode, e.ErrorCode, e.ResponseBody, e);
+            }
+        }, cancellationToken);
+
     // ------------------------------------------------------------------
     // Error handling: surface a stable, machine-readable error payload
     // instead of throwing (a throw yields a protocol error, which is a

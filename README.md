@@ -105,7 +105,7 @@ Przykładowa, udana odpowiedź:
 
 ```
 initialize OK: forgejo-mcp-server v1.0.0 (2025-06-18)
-tools (12): list_repos, create_issue, list_commits, list_issues, get_repo, get_file, list_pull_requests, get_issue, get_pull_request, get_pull_request_files, list_releases, list_file_tree
+tools (19): list_repos, create_issue, list_commits, list_issues, get_repo, get_file, list_pull_requests, get_issue, get_pull_request, get_pull_request_files, list_releases, list_file_tree, list_branches, get_branch, list_labels, create_label, update_issue, add_issue_comment, create_pull_request
 resources: instance
 resource templates: repo/{owner}/{name}
 ```
@@ -170,6 +170,13 @@ Pełna lista — parametry opisują dokładnie interfejs w
 | `list_releases`         | `GET /repos/{owner}/{name}/releases`           | `owner`, `name`, `page`, `limit` (meta-dane assetów: nazwa/URL/rozmiar — nigdy treść) |
 | `get_file`              | `GET /repos/{owner}/{name}/raw/{path}`         | `owner`, `name`, `path`, `branch`                                                 |
 | `list_file_tree`        | `GET /repos/{owner}/{name}/contents/{path}`    | `owner`, `name`, `path` (pusta = katalog główny), `branch`                       |
+| `list_branches`         | `GET /repos/{owner}/{name}/branches`           | `owner`, `name` — zwraca `name`, `commit_id`, `commit_message` (1. linia), `commit_url` |
+| `get_branch`            | `GET /repos/{owner}/{name}/branches/{name}`    | `owner`, `name`, `branch` (nazwy z `/` też działają)                             |
+| `list_labels`           | `GET /repos/{owner}/{name}/labels`             | `owner`, `name` — zwraca `id`, `name`, `color`, `description`                    |
+| `create_label`          | `POST /repos/{owner}/{name}/labels`            | `owner`, `name`, `label_name`, `color` (#rrggbb), `description` (opcjonalna) — idempotentne po nazwie, patrz niżej |
+| `update_issue`          | `PATCH /repos/{owner}/{name}/issues/{index}`   | `owner`, `name`, `index` + rzadkie (sparse) `title`, `body`, `state`, `assignees`, `clear_assignees`, `milestone_id`, `labels[]` (ids), `add_label_ids[]`, `remove_label_ids[]` |
+| `add_issue_comment`     | `POST /repos/{owner}/{name}/issues/{index}/comments` | `owner`, `name`, `index`, `content` (Markdown) — pole na szynie to `body`   |
+| `create_pull_request`   | `POST /repos/{owner}/{name}/pulls`             | `owner`, `name`, `title`, `base`, `head` (`owner:branch` = cross-repo), `body`, `draft` — świadomie bez labeli/assignees |
 
 ### Paginacja (kontrakt `page` / `next_page`)
 
@@ -197,7 +204,94 @@ zwracają `total` (np. ta produkcyjna).
 
 `list_file_tree` nie jest stronowany — katalogi Forgejo/Gitea zwracane są
 jako jedna, płaska lista (`{path, entries}`), więc nie ma `page`
-/`next_page`.
+/`next_page`. Analogicznie: `list_branches` i `list_labels` zwracają
+prostą listę (bez koperty stronowania) — to zestawienia naturalnie
+niewielkie, więc nie warto je stronyować.
+
+### Mutacje i idempotentność (Tier 2)
+
+Tier 2 przynosi trzy modyfikujące narzędzia (`create_label`,
+`update_issue`, `create_pull_request`) oraz dodające komentarz
+`add_issue_comment` — każde ma własną umowę:
+
+**`create_label` — idempotentne po nazwie.** Serwer na naszej instancji
+**nie egzekwuje unikalności nazw etykiet** — powtórne `POST /labels` z tą
+samą nazwą zwraca 201 i tworzy **dubel** (inne buildy odpowiedzą `409
+Conflict`). Dlatego warstwa MCP **pierw listuje etykiety** (`GET
+/labels`) i jeśli znajdzie taką samą nazwę, zwraca istniejącą etykietę
+bez żadnego `POST`. Obie ścieżki mają identyczną kopertę:
+
+```jsonc
+// nowa etykieta (tworzona)
+{ "created": true,  "label": { "id": 42, "name": "nowa", "color": "336699", "description": "…" }, "existing": null }
+// istniejąca (POST nie wysłany)
+{ "created": false, "existing": { "id": 98, "name": "nowa", "color": "336699", "description": "…" }, "label": null }
+```
+
+Klient może zawsze rozróżniać `created` bez oglądania statusu HTTP.
+Ścieżkę idempotency pokrywają testy
+(`CreateLabel_existing_name_returns_created_false_not_an_error`).
+
+**`update_issue` — `PATCH`, nie `POST`/`PUT`.** Test live na
+`https://git.home.internal` (2026-08-26):
+
+```
+POST   /api/v1/repos/o/n/issues/9  → 405  [Allow: GET, PATCH, DELETE]
+PUT    /api/v1/repos/o/n/issues/9  → 405  [Allow: GET, PATCH, DELETE]
+PATCH  /api/v1/repos/o/n/issues/9  → 201  {…updated issue…}
+```
+
+(Kluczowy wniosek: instancja akceptuje **PATCH** — nie `POST`, nie `PUT`.)
+To samo reguły dla PR: `PATCH /pulls/{n} state=closed → 201,
+PUT/POST → 405`.
+
+Klient wysyła **rzadkie ciało** (sparse payload) — tylko pola, które
+faktycznie mamy zmienić:
+
+- `title` / `body` / `state` (`open`|`closed`) — proste wartości;
+- `assignees` — lista logins (semantyka „zamień zestaw”);
+  `assignees=[]` jest **przekazywane** tylko gdy
+  `clear_assignees=true` — inaczej pusta lista jest odrzucana i nie
+  trafia na szynę (serwer zostawia przypisane konta; zapobiega
+  przypadkowemu odłączeniu assignee);
+- `milestone_id` — id kamienia milowego;
+- `labels` — lista **id** etykiet (semantyka „zamień zestaw”, użyj
+  `list_labels` najpierw); `add_label_ids` / `remove_label_ids` —
+  przyrostowe.
+
+Gdy żaden field nie jest ustawiony klient rzuca `ArgumentException`
+**przed** HTTP — narzędzie zwraca
+`{"error":{"code":"invalid_request",…}}`, bez uderzenia w serwer.
+
+**`create_pull_request` — błędy 404 / 422.** Gdy `head` (albo `base`)
+nie istnieje, instancja odpowiada **404** z ciałem:
+
+```json
+{"message":"The target couldn't be found.",
+ "errors":["could not find 'ghost-…' to be a commit, branch or tag in the head repository dark-eternity/mcp-forgejo-server"]}
+```
+
+Inne buildy Forgejo/Gitea mogą w tych przypadkach zwracać `422`. Oba
+kody przechodzą przez `ForgejoException` i są mapowane na stabilny kod
+w kopercie błędu:
+
+```jsonc
+// 404 →  { "error": { "code": "not_found",
+//             "message": "… The `head` or `base` branch does not exist …
+//             verify with list_branches before retrying …" } }
+// 422 →  { "error": { "code": "http_422",
+//             "message": "… server response below …" } }
+```
+
+Agent użytkownika może więc deterministycznie rozróżniać
+`not_found` (praca z gałęzią) od `http_422` (np. już istniejący PR
+z tego samego head) i podpowiedzieć użytkownikowi co naprawić.
+
+**`add_issue_comment` — pole na szynie to `body`, nie `content`.**
+Warstwa MCP przyjmuje argument `content` (Markdown) dla czytelności dla
+agenta, ale klient Forgejo **wymaga pola `body`** — instancja odrzuca
+`{"content": "…"}` z `422 [Body]: Required`. Klient mapuje automatycznie;
+testy potwierdzają, że na szynę idzie `body` a **nie** `content`.
 
 ### Przykłady wywołań (jsonrpc 2.0 / MCP `tools/call`)
 
