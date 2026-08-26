@@ -293,7 +293,107 @@ public sealed record RepositoryCommit
     public GitCommit? Commit { get; init; }
 }
 
-/// <summary>The result of reading a file (raw bytes + decoded text when possible).</summary>
+/// <summary>
+/// One changed file in a pull request: churn stats plus the per-file unified
+/// patch when the instance embeds it in the <c>/pulls/{index}/files</c>
+/// listing (<c>Patch</c> is null when the API omits it — the self-hosted
+/// instance used for acceptance omits per-file patches, so use the combined
+/// <c>.diff</c> payload from the sibling method on <c>ForgejoClient</c>).</summary>
+public sealed record PullRequestFile
+{
+    /// <summary>Path of the file in the repository.</summary>
+    public string Filename { get; init; } = null!;
+
+    /// <summary>Gitea/Forgejo status: "added" / "removed" / "modified" (reported as "changed" on this instance).</summary>
+    public string? Status { get; init; }
+
+    /// <summary>Lines added.</summary>
+    public long Additions { get; init; }
+
+    /// <summary>Lines deleted.</summary>
+    public long Deletions { get; init; }
+
+    /// <summary>Total line changes (additions + deletions), when reported.</summary>
+    public long? Changes { get; init; }
+
+    /// <summary>
+    /// The unified diff patch for this file when the instance includes it;
+    /// <c>null</c> when the API omits it (as on the acceptance instance).
+    /// </summary>
+    public string? Patch { get; init; }
+}
+
+/// <summary>A repository release (asset bodies are never fetched).</summary>
+public sealed record Release
+{
+    /// <summary>Release id.</summary>
+    public long Id { get; init; }
+
+    /// <summary>Git tag the release points at.</summary>
+    public string? TagName { get; init; }
+
+    /// <summary>Display name.</summary>
+    public string? Name { get; init; }
+
+    /// <summary>Markdown body.</summary>
+    public string? Body { get; init; }
+
+    /// <summary>True when the release is not yet public.</summary>
+    public bool Draft { get; init; }
+
+    /// <summary>True for pre-releases.</summary>
+    public bool Prerelease { get; init; }
+
+    /// <summary>Creation timestamp.</summary>
+    public DateTime CreatedAt { get; init; }
+
+    /// <summary>Publish timestamp (equals creation for non-draft releases).</summary>
+    public DateTime? PublishedAt { get; init; }
+
+    /// <summary>Repository page for the release.</summary>
+    public string? HtmlUrl { get; init; }
+
+    /// <summary>Attached assets (metadata only — bodies are not fetched).</summary>
+    public IReadOnlyList<ReleaseAsset> Assets { get; init; } = [];
+}
+
+/// <summary>Metadata for a release attachment (name / url / size only).</summary>
+public sealed record ReleaseAsset
+{
+    /// <summary>Asset id.</summary>
+    public long Id { get; init; }
+
+    /// <summary>Display name.</summary>
+    public string? Name { get; init; }
+
+    /// <summary>Direct download URL.</summary>
+    public string? Url { get; init; }
+
+    /// <summary>Size in bytes, when reported.</summary>
+    public long? Size { get; init; }
+}
+
+/// <summary>One entry in a repository file tree (<c>GET /repos/{o}/{n}/contents/{path}</c>).</summary>
+public sealed record ContentEntry
+{
+    /// <summary>Entry name (leaf of the path).</summary>
+    public string Name { get; init; } = null!;
+
+    /// <summary>API type: "file", "dir", or "symlink".</summary>
+    public string? Type { get; init; }
+
+    /// <summary>Path relative to the repository root.</summary>
+    public string Path { get; init; } = null!;
+
+    /// <summary>Git blob/tree SHA of the entry.</summary>
+    public string? Sha { get; init; }
+
+    /// <summary>Size in bytes (0 for directories).</summary>
+    public long Size { get; init; }
+
+    /// <summary>Repository page for the entry.</summary>
+    public string? HtmlUrl { get; init; }
+}
 public sealed record FileContent
 {
     /// <summary>File path in the repository.</summary>

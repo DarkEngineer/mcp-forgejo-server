@@ -38,6 +38,26 @@ public sealed class TestHttpHandler : HttpMessageHandler
             Content = new StringContent(body, Encoding.UTF8, contentType),
         });
 
+    /// <summary>
+    /// Enqueues a response carrying explicit headers (e.g. <c>Link</c>,
+    /// <c>x-total-count</c>) on top of a string body — for testing the
+    /// paging-metadata pipeline.
+    /// </summary>
+    public void EnqueueWithHeaders(
+        System.Net.HttpStatusCode status,
+        string body,
+        string contentType,
+        params (string Name, string Value)[] headers)
+    {
+        var response = new HttpResponseMessage(status)
+        {
+            Content = new StringContent(body, Encoding.UTF8, contentType),
+        };
+        foreach (var (name, value) in headers)
+            response.Headers.TryAddWithoutValidation(name, value);
+        Responses.Enqueue(response);
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
     {

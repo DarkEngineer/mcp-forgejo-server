@@ -44,7 +44,7 @@ public sealed class ForgejoMcpToolSurface
     /// <param name="page">1-based page number; defaults to 1.</param>
     /// <param name="limit">Items per page; the instance default (30) applies when omitted, capped at the instance maximum (50).</param>
     [McpServerTool(Name = "list_repos", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Lists the repositories visible to the authenticated identity (GET /user/repos). Requires an access token. Returns an object with `items` (array of repository objects), `count` and `total` (when the reports it).")]
+    [Description("Lists the repositories visible to the authenticated identity (GET /user/repos). Requires an access token. Returns an object with `items` (array of repository objects), `count`, `total` (when the instance reports it) and `next_page` (null when the last page was returned — see the Pagination section of the README).")]
     public async Task<string> ListRepos(
         [Description("1-based page number of the result page to fetch.")] int page = 1,
         [Description("Maximum number of repositories to return in this page (default 30; instance cap 50).")] int? limit = null,
@@ -105,7 +105,7 @@ public sealed class ForgejoMcpToolSurface
     /// dedicated pulls endpoint.
     /// </summary>
     [McpServerTool(Name = "list_issues", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Lists the issues of a repository (GET /repos/{o}/{n}/issues). Filter by `state` (open/closed/all), `assigned_by` and `label`. Note: Forgejo includes pull requests in the issue list; use list_pull_requests for the dedicated endpoint.")]
+    [Description("Lists the issues of a repository (GET /repos/{o}/{n}/issues). Filter by `state` (open/closed/all), `assigned_by` and `label`. Note: Forgejo includes pull requests in the issue list; use list_pull_requests for the dedicated endpoint. Returns `items`, `count`, `total`, `next_page`.")]
     public async Task<string> ListIssues(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
@@ -125,7 +125,7 @@ public sealed class ForgejoMcpToolSurface
     /// <c>GET /repos/{owner}/{name}/pulls</c>).
     /// </summary>
     [McpServerTool(Name = "list_pull_requests", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Lists the pull requests of a repository (GET /repos/{o}/{n}/pulls). Filter by `state` (open/closed/all), `assigned_by` and `label`. Returns an object with `items`, `count` and `total`.")]
+    [Description("Lists the pull requests of a repository (GET /repos/{o}/{n}/pulls). Filter by `state` (open/closed/all), `assigned_by` and `label`. Returns `items`, `count`, `total`, `next_page`.")]
     public async Task<string> ListPullRequests(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
@@ -173,7 +173,7 @@ public sealed class ForgejoMcpToolSurface
     /// <c>GET /repos/{owner}/{name}/commits</c>).
     /// </summary>
     [McpServerTool(Name = "list_commits", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Lists the commits of a repository (GET /repos/{o}/{n}/commits), newest first. `branch` defaults to the repository's default branch. Returns an object with `items` (commit objects: sha, commit.message/author/committer, author, committer), `count` and `total`.")]
+    [Description("Lists the commits of a repository (GET /repos/{o}/{n}/commits), newest first. `branch` defaults to the repository's default branch. Returns `items` (commit objects: sha, commit.message/author/committer, author, committer), `count`, `total`, `next_page`.")]
     public async Task<string> ListCommits(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
@@ -186,6 +186,97 @@ public sealed class ForgejoMcpToolSurface
             new Page { Number = page, Size = limit ?? 30 },
             new CommitListOptions { Branch = branch },
             cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Gets a single issue by its repository index (backing:
+    /// <c>GET /repos/{owner}/{name}/issues/{index}</c>). Forgejo's issue
+    /// endpoint also returns pull requests, so this is the unified form.
+    /// </summary>
+    [McpServerTool(Name = "get_issue", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Gets one issue by number (GET /repos/{o}/{n}/issues/{index}): id, number, title, body, state, labels, milestone, assignees, created_at, updated_at, html_url. Errors with code `not_found` (HTTP 404) when the issue number does not exist.")]
+    public Task<string> GetIssue(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Issue number within the repository (>= 1).")] int index,
+        CancellationToken cancellationToken = default)
+        => CallAsync(() => _client.GetIssueAsync(owner, name, index, cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Gets a single pull request (backing:
+    /// <c>GET /repos/{owner}/{name}/pulls/{index}</c>).
+    /// </summary>
+    [McpServerTool(Name = "get_pull_request", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Gets one pull request by number (GET /repos/{o}/{n}/pulls/{index}): id, number, title, body, state, merged, merged_at, base/head refs, labels, milestone, assignees, comments count, timestamps, html_url. Errors with code `not_found` (HTTP 404) when the PR number does not exist.")]
+    public Task<string> GetPullRequest(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Pull request number within the repository (>= 1).")] int index,
+        CancellationToken cancellationToken = default)
+        => CallAsync(() => _client.GetPullRequestAsync(owner, name, index, cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Lists the changed files of a pull request (backing:
+    /// <c>GET /repos/{owner}/{name}/pulls/{index}/files</c>). With
+    /// <c>show_diff</c> the combined unified patch is fetched in one extra
+    /// call (<c>GET /repos/{owner}/{name}/pulls/{index}.diff</c>) and returned
+    /// as the <c>diff</c> field — no N+1 per-file requests.
+    /// </summary>
+    [McpServerTool(Name = "get_pull_request_files", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Lists the files changed by a pull request (GET /repos/{o}/{n}/pulls/{index}/files): each entry has filename, status, additions, deletions, changes, and patch (omitted when the instance omits per-file patches). Set `show_diff` to true to also receive the combined unified diff as text in the `diff` field (one extra round trip, fetched via .diff). Returns `{files, diff?}`. Errors with code `not_found` (HTTP 404) when the PR number does not exist.")]
+    public async Task<string> GetPullRequestFiles(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Pull request number within the repository (>= 1).")] int index,
+        [Description("Also fetch the combined unified diff as text in the `diff` field (one extra call to .diff). Defaults to false.")] bool show_diff = false,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            var files = await _client.GetPullRequestFilesAsync(owner, name, index, cancellationToken).ConfigureAwait(false);
+            var diff = show_diff
+                ? await _client.GetPullRequestDiffAsync(owner, name, index, cancellationToken).ConfigureAwait(false)
+                : null;
+            return new { files, diff };
+        }, cancellationToken);
+
+    /// <summary>
+    /// Lists the releases of a repository (backing:
+    /// <c>GET /repos/{owner}/{name}/releases</c>). Asset metadata only —
+    /// bodies are never fetched.
+    /// </summary>
+    [McpServerTool(Name = "list_releases", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Lists the releases of a repository (GET /repos/{o}/{n}/releases): each entry has tag_name, name, body, draft, prerelease, created_at, published_at, html_url, and assets (name, url, size only — asset bodies are never fetched). Paged: pass `page` and `limit`; continue with the returned `next_page` while it is non-null.")]
+    public Task<string> ListReleases(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("1-based page number of the result page to fetch.")] int page = 1,
+        [Description("Maximum number of releases to return in this page (default 30; instance cap 50).")] int? limit = null,
+        CancellationToken cancellationToken = default)
+        => CallAsync(() => _client.ListReleasesAsync(
+            owner, name,
+            new Page { Number = page, Size = limit ?? 30 }, cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Lists the contents of a repository directory (backing:
+    /// <c>GET /repos/{owner}/{name}/contents/{path}</c>). The flat directory
+    /// listing an agent needs to navigate a repo without guessing filenames.
+    /// </summary>
+    [McpServerTool(Name = "list_file_tree", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Lists the entries of a repository directory (GET /repos/{o}/{n}/contents/{path}): each entry has name, type (file/dir/symlink), path, sha, size, html_url. `path` is the directory relative to the repository root (empty or omitted = root); this is the file-browser endpoint, not a recursive tree. `branch` defaults to the repository's default branch. Returns `{path, entries}`.")]
+    public async Task<string> ListFileTree(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Directory path relative to the repository root (empty = root).")] string? path = null,
+        [Description("Branch (or tag/SHA) to list from; the repository default branch when omitted.")] string? branch = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            var entries = await _client.ListFileTreeAsync(owner, name, path, branch, cancellationToken).ConfigureAwait(false);
+            return new
+            {
+                path = (path ?? string.Empty).TrimStart('/'),
+                entries,
+            };
+        }, cancellationToken);
 
     // ------------------------------------------------------------------
     // Error handling: surface a stable, machine-readable error payload
