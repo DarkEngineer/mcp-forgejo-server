@@ -410,3 +410,168 @@ public sealed record FileContent
 
     public long Size { get; init; }
 }
+
+/// <summary>
+/// A repository branch (<c>GET /repos/{o}/{n}/branches[/...]</c>).
+/// Tier-2 read surface: branch name, tip commit id, and the first line of
+/// the tip commit message.
+/// </summary>
+public sealed record Branch
+{
+    /// <summary>Branch name (e.g. <c>main</c>).</summary>
+    public string Name { get; init; } = null!;
+
+    /// <summary>Full SHA of the tip commit.</summary>
+    public string CommitId { get; init; } = null!;
+
+    /// <summary>First line of the tip commit message (subject; may be empty).</summary>
+    public string? CommitMessage { get; init; }
+
+    /// <summary>Commit page URL, when the instance reports it.</summary>
+    public string? CommitUrl { get; init; }
+}
+
+/// <summary>
+/// An issue / pull-request comment (<c>POST /repos/{o}/{n}/issues/{index}/comments</c>).
+/// Carries the minimal identity the caller needs: who wrote it, when, and
+/// how to reach it.
+/// </summary>
+public sealed record IssueComment
+{
+    /// <summary>Global comment id.</summary>
+    public long Id { get; init; }
+
+    /// <summary>The account that authored the comment.</summary>
+    public User? User { get; init; }
+
+    /// <summary>Creation timestamp (RFC3339).</summary>
+    public DateTime CreatedAt { get; init; }
+
+    /// <summary>Comment page URL, when the instance reports it.</summary>
+    public string? HtmlUrl { get; init; }
+
+    /// <summary>API URL, when the instance reports it.</summary>
+    public string? Url { get; init; }
+}
+
+/// <summary>
+/// Wire payload for <see cref="ForgejoClient.CreateLabelAsync"/>
+/// (<c>POST /repos/{o}/{n}/labels</c>).
+/// </summary>
+public sealed record CreateLabelRequest
+{
+    /// <summary>Label name (required). Distinct names per repository.</summary>
+    public string Name { get; init; } = null!;
+
+    /// <summary>Label colour. Accepts <c>#rrggbb</c> or a bare <c>rrggbb</c>.</summary>
+    public string Color { get; init; } = null!;
+
+    /// <summary>Human-readable description (optional).</summary>
+    public string? Description { get; init; }
+}
+
+/// <summary>
+/// Wire payload for <see cref="ForgejoClient.AddIssueCommentAsync"/>
+/// (<c>POST /repos/{o}/{n}/issues/{index}/comments</c>). The API field on
+/// this instance is <c>body</c> (Markdown) — NOT <c>content</c>; the model
+/// keeps the conventional <c>Body</c> property name and the serializer emits
+/// <c>body</c>.
+/// </summary>
+public sealed record AddIssueCommentRequest
+{
+    /// <summary>Comment body in Markdown (required on this instance).</summary>
+    public string Body { get; init; } = null!;
+}
+
+/// <summary>
+/// Wire payload for <see cref="ForgejoClient.CreatePullRequestAsync"/>
+/// (<c>POST /repos/{o}/{n}/pulls</c>). Deliberately minimal — no labels /
+/// assignees / milestone selection: the instance surface does not need them
+/// for a first-class PR create.
+/// </summary>
+public sealed record CreatePullRequestRequest
+{
+    /// <summary>PR title (required).</summary>
+    public string Title { get; init; } = null!;
+
+    /// <summary>PR body in Markdown (optional).</summary>
+    public string? Body { get; init; }
+
+    /// <summary>Target branch name (required).</summary>
+    public string Base { get; init; } = null!;
+
+    /// <summary>Source branch. Bare = same repo; <c>owner:branch</c> = cross-repo.</summary>
+    public string Head { get; init; } = null!;
+
+    /// <summary>Draft flag. Omitted from the wire when <c>null</c> (server default).</summary>
+    public bool? Draft { get; init; }
+}
+
+/// <summary>
+/// A label as projected to the MCP surface: the stable identity fields an
+/// agent needs (id for <c>update_issue</c> label mutation, plus name / colour
+/// / description for display).
+/// </summary>
+public sealed record LabelView
+{
+    public long Id { get; init; }
+    public string Name { get; init; } = null!;
+    public string? Color { get; init; }
+    public string? Description { get; init; }
+}
+
+/// <summary>
+/// Result envelope of the <c>create_label</c> tool. <see cref="Created"/> is
+/// true on a fresh label (see <see cref="Label"/>) and false on the
+/// idempotency path (see <see cref="Existing"/>), which fires when a label
+/// with the same name already exists — on this instance the API itself would
+/// happily 201 a duplicate, and on other builds it returns 409 — so the
+/// surface resolves both cases to the same shape.
+/// </summary>
+public sealed record CreateLabelResult
+{
+    /// <summary>True when a new label was created by this call.</summary>
+    public bool Created { get; init; }
+
+    /// <summary>The created label, when <see cref="Created"/> is true.</summary>
+    public LabelView? Label { get; init; }
+
+    /// <summary>The pre-existing label, when <see cref="Created"/> is false.</summary>
+    public LabelView? Existing { get; init; }
+}
+
+/// <summary>
+/// Result envelope of the <c>create_pull_request</c> tool: the identity
+/// fields of the created PR — id, number, html_url, state (plus a few
+/// context fields) — the minimal set an agent needs to report back or chain
+/// a follow-up, without shipping the full PR document.
+/// </summary>
+public sealed record CreatePullRequestResult
+{
+    /// <summary>Global issue id of the new PR.</summary>
+    public long Id { get; init; }
+
+    /// <summary>PR number within the repository.</summary>
+    public int Number { get; init; }
+
+    /// <summary>Web URL of the PR, when the instance reports one.</summary>
+    public string? HtmlUrl { get; init; }
+
+    /// <summary>PR state: "open" / "closed".</summary>
+    public string? State { get; init; }
+
+    /// <summary>True when the PR was opened as a draft.</summary>
+    public bool Draft { get; init; }
+
+    /// <summary>The PR title (echoed for convenience).</summary>
+    public string? Title { get; init; }
+
+    /// <summary>Target branch name.</summary>
+    public string? BaseRef { get; init; }
+
+    /// <summary>Source branch name.</summary>
+    public string? HeadRef { get; init; }
+
+    /// <summary>Creation timestamp (RFC3339).</summary>
+    public DateTime CreatedAt { get; init; }
+}
