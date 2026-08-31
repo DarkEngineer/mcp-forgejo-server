@@ -193,7 +193,7 @@ public class ForgejoClientTests
         var issue = await client.CreateIssueAsync("o", "n", new CreateIssueRequest
         {
             Title = "Bug",
-            Labels = new[] { "bug" },
+            Labels = new long[] { 42 },
         });
 
         Assert.Equal(7, issue.Id);
@@ -201,7 +201,9 @@ public class ForgejoClientTests
         var body = handler.Bodies.Single();
         Assert.Equal(HttpMethod.Post, request.Method);
         Assert.Contains("\"title\":\"Bug\"", body);
-        Assert.Contains("\"labels\":[\"bug\"]", body);
+        // The create-issue contract is ids (long), not names — strings are rejected by
+        // the instance with 422. Assert the wire form is numeric ids.
+        Assert.Contains("\"labels\":[42]", body);
     }
 }
 
