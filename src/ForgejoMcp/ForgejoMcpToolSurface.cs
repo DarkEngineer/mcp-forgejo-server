@@ -71,13 +71,13 @@ public sealed class ForgejoMcpToolSurface
     /// <c>POST /repos/{owner}/{name}/issues</c>).
     /// </summary>
     [McpServerTool(Name = "create_issue", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
-    [Description("Creates a new issue in the given repository (POST /repos/{owner}/{name}/issues). `title` is required; `labels` and `assignees` must exist on the instance. Returns the created issue object. Requires write permission.")]
+    [Description("Creates a new issue in the given repository (POST /repos/{o}/{n}/issues). `title` is required; `assignees` (usernames) and `milestone` (number) must already exist on the instance. `labels` accepts either label ids (integers) or label names (strings): the surface resolves names to ids via `list_labels` before posting, because this Forgejo instance rejects label names with HTTP 422 (its create-issue endpoint expects numeric ids, not names). An unresolvable label — neither an existing name nor a parseable id — fails early with code `label_not_found` and a hint to call `list_labels`. Returns the created issue object. Requires write permission.")]
     public async Task<string> CreateIssue(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
         [Description("Issue title (required).")] string title,
         [Description("Issue body in Markdown (optional).")] string? body = null,
-        [Description("Names of labels to attach; each must already exist in the repository.")] string[]? labels = null,
+        [Description("Label names to attach (resolved to ids via list_labels), or label ids as integers. Each must already exist in the repository; an unknown name fails with `label_not_found`.")] string[]? labels = null,
         [Description("Usernames to assign the issue to; each must exist on the instance.")] string[]? assignees = null,
         [Description("Milestone number to attach, when the repository uses milestones.")] int? milestone = null,
         CancellationToken cancellationToken = default)
@@ -87,11 +87,66 @@ public sealed class ForgejoMcpToolSurface
             // produces the standard {"error":{...}} payload (CallAsync catches
             // ArgumentException) instead of a protocol-level exception.
             ArgumentException.ThrowIfNullOrWhiteSpace(title, nameof(title));
+
+            // Resolve label names -> ids. Forgejo's create-issue endpoint
+            // wants numeric ids (a 422 "cannot unmarshal string into ...
+            // CreateIssueOption.labels of type int64" is returned for names),
+            // so we normalize here. An entry that is already a bare integer
+            // string is treated as an id directly; otherwise we look it up by
+            // name in the repo's label set.
+            long[] resolvedIds = Array.Empty<long>();
+            if (labels is { Length: > 0 })
+            {
+                var ids = new List<long>(labels.Length);
+                var names = new List<string>();
+                foreach (var entry in labels)
+                {
+                    if (entry is null)
+                        // Skip nulls rather than fail the whole request.
+                        continue;
+                    if (long.TryParse(entry, out var id))
+                    {
+                        ids.Add(id);
+                    }
+                    else
+                    {
+                        names.Add(entry);
+                    }
+                }
+
+                // Only hit the API when there's at least one name to resolve;
+                // a pure-id request needs no label lookup.
+                if (names.Count > 0)
+                {
+                    var known = await _client.ListLabelsAsync(owner, name, cancellationToken).ConfigureAwait(false);
+                    var byName = known
+                        .Where(l => l is not null && l!.Name is not null)
+                        .ToDictionary(l => l!.Name!, l => l!.Id, StringComparer.Ordinal);
+                    foreach (var nameToResolve in names)
+                    {
+                        if (byName.TryGetValue(nameToResolve, out var resolved))
+                        {
+                            ids.Add(resolved);
+                        }
+                        else
+                        {
+                            // Machine-detectable code so an agent can branch on it
+                            // (see issue #12's "validate early" requirement).
+                            throw new ArgumentException(
+                                "label_not_found: label '" + nameToResolve + "' does not exist on " +
+                                owner + "/" + name + ". Call list_labels first to see the available names and ids.",
+                                nameof(labels));
+                        }
+                    }
+                }
+                resolvedIds = ids.ToArray();
+            }
+
             var request = new CreateIssueRequest
             {
                 Title = title,
                 Body = body,
-                Labels = labels ?? Array.Empty<string>(),
+                Labels = resolvedIds,
                 Assignees = assignees ?? Array.Empty<string>(),
                 Milestone = milestone,
             };

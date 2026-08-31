@@ -67,8 +67,15 @@ public class ForgejoMcpToolSurfaceTests
     [Fact]
     public async Task CreateIssue_posts_and_returns_created_issue()
     {
+        // Two HTTP calls now: GET /labels (resolve "bug" -> id) then POST /issues.
         var (surface, handler) = Build(new[]
         {
+            new HttpResponseMessage(StatusCode.OK)
+            {
+                Content = new StringContent(
+                    """[{"id":42,"name":"bug","color":"d63333","description":""}]""",
+                    Encoding.UTF8, "application/json"),
+            },
             new HttpResponseMessage(StatusCode.Created)
             {
                 Content = new StringContent("""{"id":9,"title":"Bug","state":"open"}""", Encoding.UTF8, "application/json"),
@@ -79,13 +86,67 @@ public class ForgejoMcpToolSurfaceTests
             owner: "o", name: "n", title: "Bug",
             body: "details", labels: new[] { "bug" }, assignees: null, milestone: null);
 
-        var request = handler.Requests.Single();
-        var body = handler.Bodies.Single();
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-        Assert.Equal(9, doc.RootElement.GetProperty("id").GetInt32());
-        Assert.Equal(HttpMethod.Post, request.Method);
+        // First request: the labels lookup.
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+        Assert.Equal("/api/v1/repos/o/n/labels", handler.Requests[0].RequestUri!.AbsolutePath);
+        // Second request: the actual issue creation, with the label SENT AS AN ID.
+        var post = handler.Requests[1];
+        var body = handler.Bodies[1];
+        Assert.Equal(HttpMethod.Post, post.Method);
+        Assert.Equal("/api/v1/repos/o/n/issues", post.RequestUri!.AbsolutePath);
         Assert.Contains("\"title\":\"Bug\"", body);
         Assert.Contains("\"body\":\"details\"", body);
+        // Names are normalized to ids on the wire — no string labels leak out.
+        Assert.Contains("\"labels\":[42]", body);
+        Assert.DoesNotContain("bug", body);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal(9, doc.RootElement.GetProperty("id").GetInt32());
+    }
+
+    [Fact]
+    public async Task CreateIssue_passes_label_ids_through_unchanged()
+    {
+        // A bare integer string is used directly as an id — no labels lookup.
+        var (surface, handler) = Build(new[]
+        {
+            new HttpResponseMessage(StatusCode.Created)
+            {
+                Content = new StringContent("""{"id":9,"title":"Bug","state":"open"}""", Encoding.UTF8, "application/json"),
+            }
+        });
+
+        await surface.CreateIssue(
+            owner: "o", name: "n", title: "Bug",
+            labels: new[] { "101" });
+
+        var body = handler.Bodies.Single();
+        Assert.Contains("\"labels\":[101]", body);
+        Assert.Single(handler.Requests); // only the POST; no GET /labels
+    }
+
+    [Fact]
+    public async Task CreateIssue_unknown_label_name_returns_label_not_found()
+    {
+        var (surface, _) = Build(new[]
+        {
+            // list_labels returns labels that do NOT include "no-such".
+            new HttpResponseMessage(StatusCode.OK)
+            {
+                Content = new StringContent(
+                    """[{"id":42,"name":"bug","color":"d63333"}]""",
+                    Encoding.UTF8, "application/json"),
+            },
+        });
+
+        var json = await surface.CreateIssue(
+            owner: "o", name: "n", title: "Bug", labels: new[] { "no-such" });
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var error = doc.RootElement.GetProperty("error");
+        Assert.Equal("invalid_request", error.GetProperty("code").GetString());
+        Assert.Contains("label_not_found".ToLowerInvariant(),
+            error.GetProperty("message").GetString()!.ToLowerInvariant());
     }
 
     [Fact]

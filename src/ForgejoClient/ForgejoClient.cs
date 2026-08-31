@@ -952,8 +952,13 @@ public sealed record CreateIssueRequest
     /// <summary>Issue body (Markdown; nullable).</summary>
     public string? Body { get; init; }
 
-    /// <summary>Label names to attach (must exist in the repo).</summary>
-    public IReadOnlyList<string> Labels { get; init; } = [];
+    /// <summary>
+    /// Label ids to attach (must exist in the repo). The Forgejo issue-create
+    /// endpoint expects numeric label ids, not names — sending names produces a
+    /// 422 ("cannot unmarshal string into ... CreateIssueOption.labels of type
+    /// int64"). Resolve names to ids first (e.g. via `list_labels`).
+    /// </summary>
+    public IReadOnlyList<long> Labels { get; init; } = [];
 
     /// <summary>Assignee usernames (must exist on the instance).</summary>
     public IReadOnlyList<string> Assignees { get; init; } = []
