@@ -32,7 +32,7 @@ using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 const string ServerName = "forgejo-mcp-server";
-const string ServerVersion = "1.0.0";
+const string ServerVersion = "3.0.1"; // matches release tag v3.0.1
 
 // ----- CLI flags (handled before anything is constructed) ---------------
 // The stdio MCP host takes no CLI arguments in normal operation (MCP clients
