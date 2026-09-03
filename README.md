@@ -124,6 +124,7 @@ The server speaks MCP v2024-11-05 over **stdio** (lines-delimited, JSON-RPC
 | `create_issue`            | Create an issue (with **name-or-id** `labels`) |
 | `update_issue`            | Edit an existing issue             |
 | `add_issue_comment`       | Add a comment to an issue/PR       |
+| `add_pr_comment`          | Add a comment to a PR (delegates to the issue-comments plumbing) |
 | `create_pull_request`     | Open a PR (from a branch)          |
 | `get_branch`              | Read branch metadata               |
 | `list_branches`           | List/compare branches              |

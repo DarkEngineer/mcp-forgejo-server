@@ -523,6 +523,24 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     /// <summary>
+    /// Adds a Markdown comment to a <b>pull request</b>. Forgejo treats PRs as
+    /// issues, so the only difference from <see cref="AddIssueComment"/> is that
+    /// <c>index</c> is the PR number. This reuses the existing comment plumbing
+    /// end-to-end (validation, the <c>CallAsync</c> envelope, the
+    /// <c>content</c>→<c>body</c> wire mapping, the client call) by delegating
+    /// straight to it — no duplicated logic.
+    /// </summary>
+    [McpServerTool(Name = "add_pr_comment", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Adds a comment to a pull request (POST /repos/{o}/{n}/issues/{index}/comments) — PRs are treated as issues on Forgejo, so this is the same endpoint and wire as `add_issue_comment`; `index` is the PR number shown in the UI. The tool boundary takes `content` (Markdown), the wire sends it as `body` (this instance 422s the `content` key with `[Body]: Required`). Returns the created comment object with `id`, `user`, `created_at`, `html_url`.")]
+    public Task<string> AddPrComment(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("PR number within the repository (>= 1).")] int index,
+        [Description("Comment body in Markdown (required).")] string content,
+        CancellationToken cancellationToken = default)
+        => AddIssueComment(owner, name, index, content, cancellationToken);
+
+    /// <summary>
     /// Creates a pull request (backing: <c>POST /repos/{o}/{n}/pulls</c>).
     /// Minimal surface — no labels/assignees/milestone selection, per the
     /// task scope. Returns the full created PR document.
