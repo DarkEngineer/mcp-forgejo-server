@@ -323,6 +323,96 @@ public sealed record PullRequestFile
     public string? Patch { get; init; }
 }
 
+/// <summary>
+/// One changed file in a repository commit, as reported by the git-data
+/// <c>GET /repos/{o}/{n}/git/commits/{sha}</c> route. On the acceptance
+/// instance an entry carries only <c>filename</c> and <c>status</c>
+/// (\u201cadded\u201d / \u201cremoved\u201d / \u201cmodified\u201d); the
+/// per-file churn numbers live on the aggregate
+/// <see cref="CommitStats"/> instead.
+/// </summary>
+public sealed record CommitFile
+{
+    /// <summary>Path of the file in the repository.</summary>
+    public string Filename { get; init; } = null!;
+
+    /// <summary>Change status: \u201cadded\u201d / \u201cremoved\u201d / \u201cmodified\u201d.</summary>
+    public string? Status { get; init; }
+}
+
+/// <summary>Aggregate line-churn statistics for one commit.</summary>
+public sealed record CommitStats
+{
+    /// <summary>Total changed lines (additions + deletions), when reported.</summary>
+    public long? Total { get; init; }
+
+    /// <summary>Lines added.</summary>
+    public long Additions { get; init; }
+
+    /// <summary>Lines deleted.</summary>
+    public long Deletions { get; init; }
+}
+
+/// <summary>A commit reference (list parent entry): url + sha + reported created stamp.</summary>
+public sealed record CommitRef
+{
+    public string? Url { get; init; }
+
+    /// <summary>Full commit SHA.</summary>
+    public string? Sha { get; init; }
+
+    /// <summary>Clock timestamp as the instance reports it (the git-data route
+    /// reports <c>0001-01-01</c> — only the <see cref="GitCommitDetail.Created"/>
+    /// field carries a meaningful time).</summary>
+    public DateTime? Created { get; init; }
+}
+
+/// <summary>
+/// The git-data commit payload of <c>GET /repos/{owner}/{name}/git/commits/{sha}</c>
+/// (the single-commit route; the canonical <c>/commits/{sha}</c> route is not
+/// served on the acceptance instance) — backing of the <c>get_commit</c> MCP
+/// tool.
+/// </summary>
+/// <remarks>
+/// Deliberately narrow: <see cref="GitCommitDetail.Commit"/> maps only the
+/// message/author/committer fields, so the PGP <c>signature</c> block inside
+/// <c>commit.verification</c> (can be multi-KB) is dropped instead of polluting
+/// every tool payload — the boolean verdict is still available to tests via
+/// the raw wire when needed.
+/// </remarks>
+public sealed record GitCommitDetail
+{
+    /// <summary>API url of the commit.</summary>
+    public string? Url { get; init; }
+
+    /// <summary>Full commit SHA (echoed even when a short SHA was requested).</summary>
+    public string Sha { get; init; } = null!;
+
+    /// <summary>Commit time (the meaningful timestamp on this route).</summary>
+    public DateTime? Created { get; init; }
+
+    /// <summary>Repository web URL of the commit page.</summary>
+    public string? HtmlUrl { get; init; }
+
+    /// <summary>Forgejo account that authored the commit, when it could be resolved.</summary>
+    public User? Author { get; init; }
+
+    /// <summary>Forgejo account that committed, when it could be resolved.</summary>
+    public User? Committer { get; init; }
+
+    /// <summary>Commit message + git author/committer identities.</summary>
+    public GitCommit? Commit { get; init; }
+
+    /// <summary>Parent commits (one for a linear commit, more for a merge).</summary>
+    public IReadOnlyList<CommitRef> Parents { get; init; } = [];
+
+    /// <summary>Aggregate line-churn stats for the whole commit.</summary>
+    public CommitStats? Stats { get; init; }
+
+    /// <summary>Changed files (filename + status).</summary>
+    public IReadOnlyList<CommitFile> Files { get; init; } = [];
+}
+
 /// <summary>A repository release (asset bodies are never fetched).</summary>
 public sealed record Release
 {

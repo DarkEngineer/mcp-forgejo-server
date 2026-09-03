@@ -243,6 +243,29 @@ public sealed class ForgejoMcpToolSurface
             cancellationToken), cancellationToken);
 
     /// <summary>
+    /// Gets a single commit by SHA (full or short) (backing:
+    /// <c>GET /repos/{owner}/{name}/git/commits/{sha}</c> — the Forgejo
+    /// git-data route; the canonical <c>/commits/{sha}</c> route is 404
+    /// \u201cpage not found\u201d for valid SHAs on the acceptance instance).
+    /// </summary>
+    /// <remarks>
+    /// The response echoes the full <c>sha</c> even when a short one was
+    /// requested, carries inline <c>stats</c> ({total, additions, deletions})
+    /// and per-file <c>files</c> ({filename, status}) — no per-file churn and
+    /// no per-file patch on this instance. The PGP signature block inside
+    /// <c>commit.verification</c> is intentionally dropped by the client model
+    /// so it does not bloat every payload.
+    /// </remarks>
+    [McpServerTool(Name = "get_commit", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Gets one commit by SHA (GET /repos/{o}/{n}/git/commits/{sha}; the canonical /commits/{sha} route is not served on the acceptance instance). `sha` accepts a 7\u201340 hex full or short SHA — the response always echoes the full sha. Returns `sha`, `created`, `html_url`, `author`/`committer` (Forgejo accounts), `commit` (message, author, committer), `parents` (list of {sha, url}), `stats` ({total, additions, deletions}) and `files` ({filename, status: added|removed|modified}; per-file churn/patches are not reported by this instance). Errors with code `invalid_request` for a malformed SHA (no HTTP call is made) and `not_found` (HTTP 404) for an unknown SHA.")]
+    public async Task<string> GetCommit(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Commit SHA, full or short (7\u201340 hex characters).")] string sha,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(() => _client.GetCommitAsync(owner, name, sha, cancellationToken), cancellationToken);
+
+    /// <summary>
     /// Gets a single issue by its repository index (backing:
     /// <c>GET /repos/{owner}/{name}/issues/{index}</c>). Forgejo's issue
     /// endpoint also returns pull requests, so this is the unified form.

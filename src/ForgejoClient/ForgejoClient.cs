@@ -233,6 +233,38 @@ public sealed class ForgejoClient : IDisposable
     }
 
     /// <summary>
+    /// Gets a single commit by SHA (full or short, 7\u201340 hex chars) —
+    /// backing of <c>get_commit</c>.
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/{o}/{n}/git/commits/{sha}</c> (Forgejo git-data
+    /// route). The canonical <c>/repos/{o}/{n}/commits/{sha}</c> route is 404
+    /// \u201cpage not found\u201d for valid SHAs on the acceptance instance
+    /// (verified live, git.home.internal 16.0.3+gitea-1.22.0), which is also
+    /// the route <c>list_commits</c> items advertise as their
+    /// <c>url</c>. A short SHA resolves server-side: the response always
+    /// echoes the full <c>sha</c> (so the MCP payload is anchored to the full
+    /// identity). Unknown SHAs surface as a 404 with a swagger-style body
+    /// (<c>{\u0022message\u0022: &lt;sha&gt;, "url": \u2026/swagger,
+    /// "errors": []}</c>) which the existing error pipeline maps to
+    /// <c>not_found</c>. SHA validation is client-side (7\u201340 hex) so a
+    /// malformed input fails fast with <c>invalid_request</c> and never reaches
+    /// the wire. Errors: 404, 401, 403.
+    /// </remarks>
+    public Task<GitCommitDetail> GetCommitAsync(string owner, string name, string sha, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (string.IsNullOrWhiteSpace(sha) || sha.Length is < 7 or > 40 || sha.Any(c => !Uri.IsHexDigit(c)))
+        {
+            throw new ArgumentException(
+                "sha must be 7\u201340 hex characters (full or short commit SHA); " +
+                $"got '{(string.IsNullOrWhiteSpace(sha) ? "<empty>" : sha)}'.", nameof(sha));
+        }
+        return SendAsync<GitCommitDetail>(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/git/commits/{Uri.EscapeDataString(sha)}", ct: ct);
+    }
+
+    /// <summary>
     /// Gets a single issue (or pull request, in Forgejo's model) — backing of
     /// <c>get_issue</c>. Errors: 404 (not found / no permission).
     /// </summary>
