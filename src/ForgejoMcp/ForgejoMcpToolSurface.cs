@@ -599,6 +599,89 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     // ------------------------------------------------------------------
+    // Milestones (issue #20): list / get (by global id) / create.
+    //
+    // Wire-shape note (verified live on the acceptance instance, 2026-09-03):
+    // milestones carry no repository-local `number` — the identifier is the
+    // global `id`, and `GET /repos/{o}/{n}/milestones/{id}` resolves by that
+    // id. `list_milestones` returns the API's plain array (like
+    // `list_branches` / `list_labels`), not a paged envelope. `due_on` is an
+    // ISO-8601 *string* (null when unset).
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Lists the repository's milestones (backing:
+    /// <c>GET /repos/{o}/{n}/milestones</c>). Each entry carries <c>id</c>
+    /// (a global id — the API has no repository-local number), <c>title</c>,
+    /// <c>description</c>, <c>state</c>, <c>open_issues</c>,
+    /// <c>closed_issues</c>, <c>created_at</c>, <c>updated_at</c>,
+    /// <c>closed_at</c>, and <c>due_on</c> (ISO-8601 string or null).
+    /// </summary>
+    [McpServerTool(Name = "list_milestones", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Lists the milestones of a repository (GET /repos/{o}/{n}/milestones): each entry has `id` (a global id — the milestone lookup key; the API reports no repository-local number), `title`, `description`, `state` (open|closed), `open_issues`, `closed_issues`, `created_at`, `updated_at`, `closed_at`, and `due_on` (ISO-8601 string, null when unset). The instance returns a plain JSON array (like list_branches / list_labels). Errors with code `not_found` (HTTP 404) when the repo is missing or not visible to the token.")]
+    public async Task<string> ListMilestones(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Maximum number of milestones to return (the instance default applies when omitted).")] int? limit = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(owner, nameof(owner));
+            ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(name));
+            return await _client.ListMilestonesAsync(owner, name, limit, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Gets a single milestone by its (global) <c>id</c> — backing:
+    /// <c>GET /repos/{o}/{n}/milestones/{id}</c>. Returns the same shape as one
+    /// entry of <c>list_milestones</c>.
+    /// </summary>
+    [McpServerTool(Name = "get_milestone", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Gets one milestone (GET /repos/{o}/{n}/milestones/{id}): the same fields as one entry of `list_milestones` — `id` (the global lookup id), `title`, `description`, `state`, `open_issues`, `closed_issues`, `created_at`, `updated_at`, `closed_at`, `due_on`. `id` is the milestone's `id` field (the API has no repository-local `number`); obtain it from `list_milestones`. Errors with code `not_found` (HTTP 404) when the milestone or repo does not exist for this token.")]
+    public async Task<string> GetMilestone(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Milestone id (>= 1) — the `id` field of a milestone from `list_milestones` (the API has no repository-local number).")] long id,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(owner, nameof(owner));
+            ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(name));
+            if (id < 1)
+                throw new ArgumentException("id must be >= 1 (the milestone's id from list_milestones).", nameof(id));
+            return await _client.GetMilestoneAsync(owner, name, id, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Creates a milestone in a repository (mutating; backing:
+    /// <c>POST /repos/{o}/{n}/milestones</c>). <c>title</c> is required;
+    /// <c>description</c> and <c>due_on</c> (ISO-8601 string) are optional
+    /// and omitted from the wire when not supplied.
+    /// </summary>
+    [McpServerTool(Name = "create_milestone", Destructive = true, Idempotent = true, OpenWorld = true, ReadOnly = false)]
+    [Description("Creates a milestone in the given repository (POST /repos/{o}/{n}/milestones). `title` is required; `description` is optional; `due_on` is an optional ISO-8601 date-time string (e.g. 2026-10-01T00:00:00Z) — omitted from the wire when not set. Returns the created milestone object, including its `id` (the global lookup id — use it with `get_milestone`; the API reports no repository-local `number`), `title`, `description`, `state`, `open_issues`, `closed_issues`, `created_at`, `updated_at`, `closed_at`, and `due_on`. Idempotency note: a same-title create may 200 or 422 (duplicate) — a 422 duplicate is an acceptable repeat and is surfaced as a `http_422` error envelope with the server's message. Requires write permission.")]
+    public async Task<string> CreateMilestone(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Milestone title (required). Distinct per repository.")] string title,
+        [Description("Human-readable description (optional).")] string? description = null,
+        [Description("Due date as an ISO-8601 string (optional; omitted from the wire when not supplied).")] string? due_on = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(owner, nameof(owner));
+            ArgumentException.ThrowIfNullOrWhiteSpace(name, nameof(name));
+            ArgumentException.ThrowIfNullOrWhiteSpace(title, nameof(title));
+            var req = new CreateMilestoneRequest
+            {
+                Title = title,
+                Description = description,
+                DueOn = due_on,
+            };
+            return await _client.CreateMilestoneAsync(owner, name, req, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    // ------------------------------------------------------------------
     // Error handling: surface a stable, machine-readable error payload
     // instead of throwing (a throw yields a protocol error, which is a
     // different class of failure from "the API told us the object does
