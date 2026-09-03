@@ -128,6 +128,9 @@ The server speaks MCP v2024-11-05 over **stdio** (lines-delimited, JSON-RPC
 | `get_branch`              | Read branch metadata               |
 | `list_branches`           | List/compare branches              |
 | `create_label`            | Create a label                     |
+| `list_milestones`         | List milestones of a repo          |
+| `get_milestone`           | Get a single milestone (by id)     |
+| `create_milestone`        | Create a milestone                 |
 | `list_releases`           | List releases of a repo; also `get_release` |
 | `list_file_tree`          | List/recurse files of a repo       |
 | *(more)*                   |                                     |

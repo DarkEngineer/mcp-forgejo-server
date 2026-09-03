@@ -334,6 +334,82 @@ public sealed class ForgejoClient : IDisposable
     }
 
     /// <summary>
+    /// Lists the repository's milestones — backing of <c>list_milestones</c>.
+    /// Each entry carries the milestone's fields verbatim from the wire:
+    /// <c>id</c> (a global id — the Gitea/Forgejo wire has no
+    /// repository-local <c>number</c>), <c>title</c>, <c>description</c>,
+    /// <c>state</c> ("open" / "closed"), <c>open_issues</c>,
+    /// <c>closed_issues</c>, <c>created_at</c>, <c>updated_at</c>,
+    /// <c>closed_at</c>, and <c>due_on</c> (null when unset).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/{o}/{n}/milestones</c>. The acceptance instance
+    /// (verified 2026-09-03, live) returns a plain JSON array — not a paged
+    /// envelope — so a <c>limit</c> query parameter is accepted for
+    /// API-compatibility but the payload shape is what the server sends.
+    /// Errors: 404 (repo not found / no permission).
+    /// </remarks>
+    public async Task<IReadOnlyList<RepositoryMilestone>> ListMilestonesAsync(
+        string owner, string name, int? perPage = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var qs = perPage is { } p && p > 0 ? $"?limit={p}" : string.Empty;
+        var json = await SendAsyncCore(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/milestones{qs}", null, null, ct).ConfigureAwait(false);
+        return ForgejoJson.FromJson<IReadOnlyList<RepositoryMilestone>>(json)
+            ?? throw new ForgejoException($"{PathOnly($"/repos/{owner}/{name}/milestones")} response was not a JSON array.");
+    }
+
+    /// <summary>
+    /// Gets a single milestone by its global <c>id</c> — backing of
+    /// <c>get_milestone</c>. Returns the same shape as one entry of
+    /// <c>list_milestones</c>.
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/{o}/{n}/milestones/{id}</c>. The id is the
+    /// <c>id</c> field of the milestone document (a global id — the Gitea/
+    /// Forgejo wire has no repository-local "number"). Verified live
+    /// (2026-09-03): <c>/milestones/{id}</c> resolves by the global id;
+    /// there is no other key. Errors: 404 (milestone or repo not found).
+    /// </remarks>
+    public Task<RepositoryMilestone> GetMilestoneAsync(
+        string owner, string name, long id, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (id < 1)
+            throw new ArgumentOutOfRangeException(nameof(id), id, "milestone id must be >= 1.");
+        return SendAsync<RepositoryMilestone>(HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/milestones/{id}", ct: ct);
+    }
+
+    /// <summary>
+    /// Creates a milestone in <c>owner/name</c> — backing of
+    /// <c>create_milestone</c> (mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>POST /repos/{o}/{n}/milestones</c> (201 with the created
+    /// milestone). Required: <see cref="CreateMilestoneRequest.Title"/>.
+    /// Optional: <see cref="CreateMilestoneRequest.Description"/> and
+    /// <see cref="CreateMilestoneRequest.DueOn"/> (an ISO-8601
+    /// <c>DateTime</c> — serialised to the wire as an ISO-8601 string;
+    /// omitted when null, so an un-dated milestone does not send
+    /// <c>"due_on":null</c>). Verified live (2026-09-03): a
+    /// <c>due_on</c> of a later date is accepted and re-echoed verbatim.
+    /// Errors: 404 (repo), 422 (validation, e.g. a malformed
+    /// <c>due_on</c>).
+    /// </remarks>
+    public Task<RepositoryMilestone> CreateMilestoneAsync(
+        string owner, string name, CreateMilestoneRequest req, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(req);
+        if (string.IsNullOrWhiteSpace(req.Title))
+            throw new ArgumentException("CreateMilestoneRequest.Title must not be empty.", nameof(req));
+        return SendAsync<RepositoryMilestone>(HttpMethod.Post, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/milestones", req, ct);
+    }
+
+    /// <summary>
     /// Lists the repository's branches — backing of <c>list_branches</c>.
     /// Each entry carries the branch name plus tip-commit id/message (subject
     /// line only) so an agent can navigate without a second call.
