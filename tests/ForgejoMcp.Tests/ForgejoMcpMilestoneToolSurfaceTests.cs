@@ -83,7 +83,6 @@ public class ForgejoMcpMilestoneToolSurfaceTests
         Assert.Equal(3, e.GetProperty("open_issues").GetInt32());
         Assert.Equal(1, e.GetProperty("closed_issues").GetInt32());
         Assert.Equal("2026-09-03T21:51:13Z", e.GetProperty("created_at").GetString());
-        Assert.Equal("due_on", "due_on"); // key exists
         Assert.True(e.TryGetProperty("due_on", out _));
         Assert.Equal("/api/v1/repos/o/n/milestones", handler.Requests.Single().RequestUri!.AbsolutePath);
         Assert.Equal("GET", handler.Requests.Single().Method.Method);

@@ -622,7 +622,7 @@ public sealed class ForgejoMcpToolSurface
     public async Task<string> ListMilestones(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
-        [Description("Maximum number of milestones to return (the instance default applies when omitted).")] int? limit = null,
+        [Description("Maximum number of milestones to request (the instance default applies when omitted). This acceptance instance returns an unpaged plain array and may ignore this value, so do not rely on it as a page size.")] int? limit = null,
         CancellationToken cancellationToken = default)
         => await CallAsync(async () =>
         {
