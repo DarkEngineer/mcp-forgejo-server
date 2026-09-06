@@ -294,6 +294,46 @@ public class ForgejoMcpTier2ToolSurfaceTests
     }
 
     // ------------------------------------------------------------------
+    // add_pr_comment (delegates to add_issue_comment's plumbing)
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task AddPrComment_posts_to_issues_comments_and_returns_comment_identity()
+    {
+        // The live API accepts PR numbers on the issues-comments endpoint, so
+        // the acceptance round-trip posts against a real PR number.
+        var (surface, handler) = Build(new[] { Created("""
+            {"id": 7, "body": "pr review note", "user": {"login": "hermes-agent"},
+             "created_at": "2026-09-01T21:30:00Z", "html_url": "https://g.example/o/n/pulls/15#issuecomment-7"}
+            """) });
+        var json = await surface.AddPrComment("o", "n", 15, "pr review note");
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal(7, doc.RootElement.GetProperty("id").GetInt32());
+        Assert.Equal("hermes-agent", doc.RootElement.GetProperty("user").GetProperty("login").GetString());
+        Assert.Equal("2026-09-01T21:30:00Z",
+            doc.RootElement.GetProperty("created_at").GetString());
+        Assert.Equal("https://g.example/o/n/pulls/15#issuecomment-7",
+            doc.RootElement.GetProperty("html_url").GetString());
+        // Wire contract: POST, same issues-comments endpoint, `body` key (not `content`).
+        var (req, body) = (handler.Requests.Single(), handler.Bodies.Single());
+        Assert.Equal("POST", req.Method.Method);
+        Assert.EndsWith("/repos/o/n/issues/15/comments", req.RequestUri!.AbsolutePath);
+        var sent = System.Text.Json.JsonDocument.Parse(body).RootElement;
+        Assert.Equal("pr review note", sent.GetProperty("body").GetString());
+        Assert.False(sent.TryGetProperty("content", out _));
+    }
+
+    [Fact]
+    public async Task AddPrComment_blank_content_is_invalid_request_and_never_hits_the_wire()
+    {
+        var (surface, handler) = Build();
+        var json = await surface.AddPrComment("o", "n", 15, "  ");
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal("invalid_request", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Empty(handler.Requests);
+    }
+
+    // ------------------------------------------------------------------
     // create_pull_request
     // ------------------------------------------------------------------
 
