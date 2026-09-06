@@ -136,6 +136,21 @@ The server speaks MCP v2024-11-05 over **stdio** (lines-delimited, JSON-RPC
 | `list_file_tree`          | List/recurse files of a repo       |
 | *(more)*                   |                                     |
 
+**Milestone identifier (cross-tool convention).** All five surface tools that touch
+milestones — `create_issue.milestone`, `update_issue.milestone_id`,
+`list_milestones`, `get_milestone`, `create_milestone` — use the **global milestone
+`id`**. The wire has no repository-local `number`; `list_milestones` is the only
+source of valid `id` values. `create_issue.milestone` *looks* like a number (it's an
+`int`) but is the same global id as `update_issue.milestone_id`.
+
+| Tool | Field | Takes |
+|------|-------|-------|
+| `create_issue` | `milestone` | global milestone `id` (int) |
+| `update_issue` | `milestone_id` | global milestone `id` (long) |
+| `list_milestones` | returns | `id` per entry |
+| `get_milestone` | `id` | global milestone `id` (long) |
+| `create_milestone` | — | returns `id` |
+
 ### Resources
 
 | Resource                              | Purpose                                          |
