@@ -228,7 +228,7 @@ public sealed class ForgejoMcpToolSurface
     /// <c>GET /repos/{owner}/{name}/commits</c>).
     /// </summary>
     [McpServerTool(Name = "list_commits", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Lists the commits of a repository (GET /repos/{o}/{n}/commits), newest first. `branch` defaults to the repository's default branch. Returns `items` (commit objects: sha, commit.message/author/committer, author, committer), `count`, `total`, `next_page`.")]
+    [Description("Lists the commits of a repository (GET /repos/{o}/{n}/commits), newest first. `branch` defaults to the repository's default branch. Returns `items` (commit objects: sha, url — the API URL of the commit, pointing at the same endpoint `get_commit` resolves against, html_url — the repo commit page, created_at, commit.message/author/committer, author, committer), `count`, `total`, `next_page`.")]
     public async Task<string> ListCommits(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,

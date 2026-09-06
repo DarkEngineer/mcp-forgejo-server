@@ -291,6 +291,17 @@ public sealed record RepositoryCommit
 
     /// <summary>The git commit metadata.</summary>
     public GitCommit? Commit { get; init; }
+
+    /// <summary>
+    /// API URL of the commit as the instance reports it. On the acceptance
+    /// instance this is the git-data route
+    /// <c>/api/v1/repos/{o}/{n}/git/commits/{sha}</c> — exactly the endpoint
+    /// <c>get_commit</c> resolves against.
+    /// </summary>
+    public string? Url { get; init; }
+
+    /// <summary>Repository web URL of the commit page, when the instance reports one.</summary>
+    public string? HtmlUrl { get; init; }
 }
 
 /// <summary>
