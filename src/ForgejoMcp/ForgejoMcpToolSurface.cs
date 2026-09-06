@@ -71,7 +71,7 @@ public sealed class ForgejoMcpToolSurface
     /// <c>POST /repos/{owner}/{name}/issues</c>).
     /// </summary>
     [McpServerTool(Name = "create_issue", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
-    [Description("Creates a new issue in the given repository (POST /repos/{o}/{n}/issues). `title` is required; `assignees` (usernames) and `milestone` (number) must already exist on the instance. `labels` accepts either label ids (integers) or label names (strings): the surface resolves names to ids via `list_labels` before posting, because this Forgejo instance rejects label names with HTTP 422 (its create-issue endpoint expects numeric ids, not names). An unresolvable label — neither an existing name nor a parseable id — fails early with code `label_not_found` and a hint to call `list_labels`. Returns the created issue object. Requires write permission.")]
+    [Description("Creates a new issue in the given repository (POST /repos/{o}/{n}/issues). `title` is required; `assignees` (usernames) and the milestone (its global `id`, obtainable via `list_milestones`) must already exist on the instance. `labels` accepts either label ids (integers) or label names (strings): the surface resolves names to ids via `list_labels` before posting, because this Forgejo instance rejects label names with HTTP 422 (its create-issue endpoint expects numeric ids, not names). An unresolvable label — neither an existing name nor a parseable id — fails early with code `label_not_found` and a hint to call `list_labels`. Returns the created issue object. Requires write permission.")]
     public async Task<string> CreateIssue(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
@@ -79,7 +79,7 @@ public sealed class ForgejoMcpToolSurface
         [Description("Issue body in Markdown (optional).")] string? body = null,
         [Description("Label names to attach (resolved to ids via list_labels), or label ids as integers. Each must already exist in the repository; an unknown name fails with `label_not_found`.")] string[]? labels = null,
         [Description("Usernames to assign the issue to; each must exist on the instance.")] string[]? assignees = null,
-        [Description("Milestone number to attach, when the repository uses milestones.")] int? milestone = null,
+        [Description("Milestone id to attach, when the repository uses milestones. This is the milestone's global `id` field — not a repository-local `number` (verified live: the wire resolves this value as the global milestone id; a value that is only a repo-local number does not attach). Obtain valid ids via `list_milestones`.")] int? milestone = null,
         CancellationToken cancellationToken = default)
         => await CallAsync(async () =>
         {
@@ -470,7 +470,7 @@ public sealed class ForgejoMcpToolSurface
         [Description("New state: `open` or `closed` (optional).")] string? state = null,
         [Description("New assignee logins (set semantics: the issue ends up with exactly these; omit / null to keep).")] string[]? assignees = null,
         [Description("Explicit opt-in to clear the assignees to zero. Without this flag, an empty `assignees` list is dropped rather than transmitted, to avoid accidental unassignment.")] bool clear_assignees = false,
-        [Description("Milestone id to set (optional).")] long? milestone_id = null,
+        [Description("Milestone id to set (optional) — the milestone's global `id`, not a repository-local number. Obtain valid ids via `list_milestones`; the same value `create_issue.milestone` expects.")] long? milestone_id = null,
         [Description("Label ids to set (set semantics: the issue ends up with exactly these; caller must call `list_labels` first to obtain ids).")] long[]? labels = null,
         [Description("Label ids to ADD (incremental).")] long[]? add_label_ids = null,
         [Description("Label ids to REMOVE (incremental).")] long[]? remove_label_ids = null,
