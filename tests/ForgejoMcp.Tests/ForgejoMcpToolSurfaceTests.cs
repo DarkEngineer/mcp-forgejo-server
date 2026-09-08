@@ -214,6 +214,39 @@ public class ForgejoMcpToolSurfaceTests
     }
 
     [Fact]
+    public async Task ListCommits_items_expose_url_and_html_url()
+    {
+        // Issue #25: the `ListResult<RepositoryCommit>` model previously dropped
+        // the wire `url`/`html_url`, leaving `list_commits` items with no usable
+        // commit link — a consumer following an item's `url` to get commit detail
+        // found nothing. The fix surfaces both, and the `url` is the git-data
+        // route `get_commit` resolves against.
+        var wire = "[" +
+            "{\"sha\":\"7ed6f8a2fcdb30649689b7770d3b5c2ba6693ad0\"," +
+            "\"url\":\"https://git.example.com/api/v1/repos/o/n/git/commits/7ed6f8a2fcdb30649689b7770d3b5c2ba6693ad0\"," +
+            "\"html_url\":\"https://git.example.com/o/n/commit/7ed6f8a2fcdb30649689b7770d3b5c2ba6693ad0\"," +
+            "\"commit\":{\"message\":\"hello\"}}" +
+            "]";
+        var (surface, _) = Build(new[]
+        {
+            new HttpResponseMessage(StatusCode.OK)
+            {
+                Content = new StringContent(wire, Encoding.UTF8, "application/json"),
+            }
+        });
+
+        var json = await surface.ListCommits("o", "n");
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var item = doc.RootElement.GetProperty("items")[0];
+        Assert.Equal(
+            "https://git.example.com/api/v1/repos/o/n/git/commits/7ed6f8a2fcdb30649689b7770d3b5c2ba6693ad0",
+            item.GetProperty("url").GetString());
+        Assert.Equal(
+            "https://git.example.com/o/n/commit/7ed6f8a2fcdb30649689b7770d3b5c2ba6693ad0",
+            item.GetProperty("html_url").GetString());
+    }
+
+    [Fact]
     public async Task GetFile_returns_text_when_utf8()
     {
         var (surface, handler) = Build(new[]

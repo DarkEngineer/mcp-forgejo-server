@@ -128,6 +128,8 @@ The server speaks MCP v2024-11-05 over **stdio** (lines-delimited, JSON-RPC
 | `create_pull_request`     | Open a PR (from a branch)          |
 | `get_branch`              | Read branch metadata               |
 | `list_branches`           | List/compare branches              |
+| `list_commits`            | List commits newest-first          |
+| `get_commit`              | Read a commit by SHA (full or short; `stats` + `files`) |
 | `create_label`            | Create a label                     |
 | `list_milestones`         | List milestones of a repo          |
 | `get_milestone`           | Get a single milestone (by id)     |
