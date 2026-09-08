@@ -676,3 +676,78 @@ public sealed record CreatePullRequestResult
     /// <summary>Creation timestamp (RFC3339).</summary>
     public DateTime CreatedAt { get; init; }
 }
+
+/// <summary>
+/// A milestone on a repository, as returned by the milestone endpoints
+/// (<c>GET/POST /repos/{o}/{n}/milestones</c>). This is the wire shape of the
+/// standalone milestone endpoints, distinct from
+/// <see cref="Milestone"/> (the projection embedded on issues/PRs).
+/// Verified against the acceptance instance (2026-09-03): entries carry
+/// <c>id</c> (a <em>global</em> id — the Gitea/Forgejo wire has no
+/// repository-local <c>number</c>), <c>title</c>, optional <c>description</c>,
+/// <c>state</c> ("open" / "closed"), <c>open_issues</c>,
+/// <c>closed_issues</c>, <c>created_at</c>, <c>updated_at</c>,
+/// <c>closed_at</c> (null while open), and optional <c>due_on</c>.
+/// </summary>
+public sealed record RepositoryMilestone
+{
+    /// <summary>The milestone's global id (the lookup key for the
+    /// <c>/milestones/{id}</c> endpoint).</summary>
+    public long Id { get; init; }
+
+    /// <summary>Milestone title (unique per repository on create).</summary>
+    public string Title { get; init; } = null!;
+
+    /// <summary>Optional description (null when unset).</summary>
+    public string? Description { get; init; }
+
+    /// <summary>State: "open" / "closed".</summary>
+    public string? State { get; init; }
+
+    /// <summary>Issues currently open against this milestone.</summary>
+    public long OpenIssues { get; init; }
+
+    /// <summary>Issues closed against this milestone.</summary>
+    public long ClosedIssues { get; init; }
+
+    /// <summary>Creation timestamp (RFC3339).</summary>
+    public DateTime CreatedAt { get; init; }
+
+    /// <summary>Last update timestamp (RFC3339).</summary>
+    public DateTime UpdatedAt { get; init; }
+
+    /// <summary>Closed timestamp (null while the milestone is open).</summary>
+    public DateTime? ClosedAt { get; init; }
+
+    /// <summary>
+    /// Due date as an ISO-8601 string exactly as reported on the wire (e.g.
+    /// <c>2026-10-01T00:00:00Z</c>); null when the milestone has no due date.
+    /// Kept a string passthrough so the tool round-trips the value verbatim.
+    /// </summary>
+    public string? DueOn { get; init; }
+}
+
+/// <summary>
+/// Wire payload for <see cref="ForgejoClient.CreateMilestoneAsync"/>
+/// (<c>POST /repos/{o}/{n}/milestones</c>). Required: <see cref="Title"/>.
+/// Optional: <see cref="Description"/> and <see cref="DueOn"/> — both are
+/// omitted from the wire when null (the shared <see cref="ForgejoJson"/>
+/// options drop nulls), so a title-only create sends exactly
+/// <c>{"title":"…"}</c>.
+/// </summary>
+public sealed record CreateMilestoneRequest
+{
+    /// <summary>Milestone title (required; distinct per repository).</summary>
+    public string Title { get; init; } = null!;
+
+    /// <summary>Optional description (omitted from the wire when null).</summary>
+    public string? Description { get; init; }
+
+    /// <summary>
+    /// Optional due date (ISO-8601 string, e.g. <c>2026-10-01T00:00:00Z</c>;
+    /// omitted from the wire when null). Sent verbatim in the <c>due_on</c>
+    /// field — the API accepts RFC3339 / date-only forms and echoes the value
+    /// back as a string.
+    /// </summary>
+    public string? DueOn { get; init; }
+}

@@ -124,15 +124,34 @@ The server speaks MCP v2024-11-05 over **stdio** (lines-delimited, JSON-RPC
 | `create_issue`            | Create an issue (with **name-or-id** `labels`) |
 | `update_issue`            | Edit an existing issue             |
 | `add_issue_comment`       | Add a comment to an issue/PR       |
+| `add_pr_comment`          | Add a comment to a PR (delegates to the issue-comments plumbing) |
 | `create_pull_request`     | Open a PR (from a branch)          |
 | `get_branch`              | Read branch metadata               |
 | `list_branches`           | List/compare branches              |
 | `list_commits`            | List commits newest-first          |
 | `get_commit`              | Read a commit by SHA (full or short; `stats` + `files`) |
 | `create_label`            | Create a label                     |
+| `list_milestones`         | List milestones of a repo          |
+| `get_milestone`           | Get a single milestone (by id)     |
+| `create_milestone`        | Create a milestone                 |
 | `list_releases`           | List releases of a repo; also `get_release` |
 | `list_file_tree`          | List/recurse files of a repo       |
 | *(more)*                   |                                     |
+
+**Milestone identifier (cross-tool convention).** All five surface tools that touch
+milestones — `create_issue.milestone`, `update_issue.milestone_id`,
+`list_milestones`, `get_milestone`, `create_milestone` — use the **global milestone
+`id`**. The wire has no repository-local `number`; `list_milestones` is the only
+source of valid `id` values. `create_issue.milestone` *looks* like a number (it's an
+`int`) but is the same global id as `update_issue.milestone_id`.
+
+| Tool | Field | Takes |
+|------|-------|-------|
+| `create_issue` | `milestone` | global milestone `id` (int) |
+| `update_issue` | `milestone_id` | global milestone `id` (long) |
+| `list_milestones` | returns | `id` per entry |
+| `get_milestone` | `id` | global milestone `id` (long) |
+| `create_milestone` | — | returns `id` |
 
 ### Resources
 
