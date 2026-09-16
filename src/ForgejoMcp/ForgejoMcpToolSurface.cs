@@ -705,6 +705,83 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     // ------------------------------------------------------------------
+    // PR-state ops (issue #18): close + merge. Highest-priority gap per
+    // #16 — we can create_pull_request but until now had no way to finish
+    // the loop. Wire (verified against the acceptance instance):
+    //
+    //   close_pull_request → PATCH /repos/{o}/{n}/pulls/{index} {"state":"closed"}
+    //   merge_pull_request → PUT   /repos/{o}/{n}/pulls/{index}/merge {"accept_type":"…"?,"delete_branch":bool}
+    //
+    // Gitea's merge success body is the bare merge-commit sha string; the
+    // surface projects it (along with a client-observed merged_at, since the
+    // wire does not echo one) into the structured result below.
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Closes a pull request (backing: <c>PATCH /repos/{owner}/{name}/pulls/{index}</c>).
+    /// The head branch is preserved — a later <c>merge_pull_request</c> on
+    /// the same number is still legal on most Gitea-compatible builds.
+    /// Idempotent: closing an already-closed PR is a no-op state check,
+    /// not a new action. This is the one intentional annotation divergence
+    /// from the standard write pattern (called out in issue #18's README
+    /// note).
+    /// </summary>
+    [McpServerTool(Name = "close_pull_request", Destructive = true, Idempotent = true, OpenWorld = true, ReadOnly = false)]
+    [Description("Closes a pull request (PATCH /repos/{o}/{n}/pulls/{index} with state=closed). The PR number `index` is the same one `list_pull_requests` returns; the head branch is left in place (a later `merge_pull_request` on the same number is typically still legal). Idempotent — closing an already-closed PR is a no-op state check, not a new action. On success returns the updated PR document (id, number, state=closed, merged=false typically, base/head refs, …). Errors: `not_found` (404) for an unknown number; `forbidden`/`unauthorized` for auth; `http_405` / `http_422` if an instance build rejects PATCH (this instance accepts it live-verified).")]
+    public async Task<string>
+        ClosePullRequest(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("PR number within the repository (>= 1) — the same number `list_pull_requests` returns.")] int index,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            return await _client.ClosePullRequestAsync(owner, name, index, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Merges a pull request (backing: <c>PUT /repos/{owner}/{name}/pulls/{index}/merge</c>).
+    /// <c>accept_type</c> is exposed as a tool parameter so squash-vs-rebase
+    /// isn't hard-wired — allowed values: <c>merge</c>, <c>rebase</c>,
+    /// <c>fastforward</c>, <c>squash</c>. <c>delete_branch</c> defaults to
+    /// <c>true</c> for this workflow (no separate branch-deletion tool exists;
+    /// issue #18), and is overridable to keep the branch.
+    /// </summary>
+    [McpServerTool(Name = "merge_pull_request", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Merges a pull request (PUT /repos/{o}/{n}/pulls/{index}/merge). `accept_type` (optional) is one of `merge` (default when omitted), `rebase`, `fastforward`, or `squash`; `delete_branch` (optional, defaults to `true`) controls whether the source branch is removed after merge (the workflow in issue #18 treats the merge as the only cleanup path — no separate branch-deletion tool has shipped yet). On success the wire returns the new merge commit SHA string (on Gitea); the MCP surface projects it into the `merge_commit` field of the result envelope (plus `number`, `merged=true`, `merged_at` = client-observed timestamp since the wire does not echo one, and `head_ref` for context). Errors: `not_found` (404) for an unknown number, `conflict` (409) for a PR that is not mergeable / is behind the base, `http_422` for a bad `accept_type` or a PR that is not open, `http_405` if an instance build rejects PUT.")]
+    public async Task<string>
+        MergePullRequest(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("PR number within the repository (>= 1).")] int index,
+        [Description("Merge strategy: 'merge' (default when omitted), 'rebase', 'fastforward', or 'squash'. Optional.")] string? accept_type = null,
+        [Description("Delete the source branch after merging. Defaults to `true` for this workflow (there is no separate branch-deletion tool yet); set to `false` to keep the branch. Optional.")] bool delete_branch = true,
+        [Description("Source (head) branch ref, echoed into the result for context (e.g. `feature/foo`). Optional — the surface uses it purely to populate `head_ref` in the envelope.")] string? head_ref = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            var req = new Forgejo.Client.MergePullRequestRequest
+            {
+                AcceptType = accept_type,
+                DeleteBranch = delete_branch,
+            };
+            // The Gitea merge endpoint returns just the merge-commit SHA
+            // string (or an empty body / a JSON object on some builds).
+            // Surface that SHA plus a client-observed merged_at — the wire
+            // does not echo one — so the envelope answers "did it merge,
+            // and with what result?".
+            var sha = await _client.MergePullRequestAsync(owner, name, index, req, cancellationToken).ConfigureAwait(false);
+            return new Forgejo.Client.MergePullRequestResult
+            {
+                Number = index,
+                Merged = true,
+                MergedAt = DateTime.UtcNow,
+                HeadRef = head_ref,
+                MergeCommit = sha,
+            };
+        }, cancellationToken);
+
+    // ------------------------------------------------------------------
     // Error handling: surface a stable, machine-readable error payload
     // instead of throwing (a throw yields a protocol error, which is a
     // different class of failure from "the API told us the object does

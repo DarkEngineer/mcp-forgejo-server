@@ -751,3 +751,60 @@ public sealed record CreateMilestoneRequest
     /// </summary>
     public string? DueOn { get; init; }
 }
+
+/// <summary>
+/// Wire payload for PR-state mutations on the <c>/pulls/{index}</c> family
+/// (issue #18). The <c>close_pull_request</c> backing sends the sparse
+/// <c>{"state":"closed"}</c> body via PATCH; the <c>merge_pull_request</c>
+/// backing sends <c>accept_type</c> (when supplied) and
+/// <c>delete_branch</c> via PUT on <c>/pulls/{index}/merge</c>.
+/// </summary>
+
+/// <summary>
+/// Wire payload for <see cref="ForgejoClient.MergePullRequestAsync"/>
+/// (<c>PUT /repos/{o}/{n}/pulls/{index}/merge</c>). <see cref="DeleteBranch"/>
+/// is the single wire key always sent (the default for this workflow is
+/// true); <see cref="AcceptType"/> is omitted when null (server default).
+/// </summary>
+public sealed record MergePullRequestRequest
+{
+    /// <summary>
+    /// Merge strategy: <c>merge</c>, <c>rebase</c>, <c>fastforward</c>, or
+    /// <c>squash</c> (sent in <c>accept_type</c>). Omitted from the wire when
+    /// null / empty (server default; on Gitea this is <c>merge</c>).
+    /// </summary>
+    public string? AcceptType { get; init; }
+
+    /// <summary>Delete the source branch on merge (defaults the tool to true; overridable).</summary>
+    public bool DeleteBranch { get; init; }
+}
+
+/// <summary>
+/// Result envelope of the <c>merge_pull_request</c> tool (issue #18). The
+/// Gitea merge endpoint returns only the new merge commit <c>sha</c> — it
+/// does not echo a <c>PullRequest</c> document — so the tool reports the
+/// PR number, that the merge succeeded, a client-observed <c>merged_at</c>,
+/// the source branch ref, and (when the instance echoes 40+ hex chars as
+/// the body) the merge commit SHA.
+/// </summary>
+public sealed record MergePullRequestResult
+{
+    /// <summary>PR number within the repository (echoes the tool input).</summary>
+    public int Number { get; init; }
+
+    /// <summary>Always true when the call resolved to a 2xx — the merge happened.</summary>
+    public bool Merged { get; init; }
+
+    /// <summary>Client-observed merge timestamp (the server does not echo one on this wire).</summary>
+    public DateTime MergedAt { get; init; }
+
+    /// <summary>Source (head) branch ref of the merged PR (echoes the tool input for context).</summary>
+    public string? HeadRef { get; init; }
+
+    /// <summary>
+    /// Merge commit SHA, when the instance's body yields a 7–40 hex string.
+    /// Populated when the body looks like a bare SHA; null otherwise.
+    /// </summary>
+    public string? MergeCommit { get; init; }
+}
+
