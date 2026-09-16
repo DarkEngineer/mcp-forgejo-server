@@ -705,6 +705,92 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     // ------------------------------------------------------------------
+    // File-write ops (issue #19): get_file_contents / edit_file / delete_file.
+
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Reads one file's metadata + decoded content (backing:
+    /// <c>GET /repos/{owner}/{name}/contents/{path}?ref={branch}</c>).
+    /// Returns the content-blob SHA (as <c>sha</c>) plus name, path, size,
+    /// html_url, and the decoded <c>content</c> string (base64 handled
+    /// transparently). The <c>sha</c> is what <c>edit_file</c> (update) and
+    /// <c>delete_file</c> must echo back.
+    /// </summary>
+    [McpServerTool(Name = "get_file_contents", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Reads a single file's metadata + content via GET /repos/{o}/{n}/contents/{path}?ref={branch}. Returns `{sha, name, path, size, html_url, content}` where `sha` is the content-blob SHA (required to update/delete via `edit_file` or `delete_file`) and `content` is the decoded file body (transparently decoded from the wire's base64). `branch` is optional and defaults to the repo's default branch. Errors: `not_found` (404) when the path does not exist on that ref.")]
+    public async Task<string>
+        GetFileContents(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Repository-relative file path (e.g. `src/Program.cs` or `docs/a.md`). Leading/slash is tolerated.")] string path,
+        [Description("Branch / ref to read from. Optional — defaults to the repo's default branch.")] string? branch = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            return await _client.GetFileContentsAsync(owner, name, path, branch, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Creates or updates one file (backing:
+    /// <c>POST</c>/<c>PUT /repos/{owner}/{name}/contents/{path}</c>).
+    /// When <c>sha</c> is omitted the call is a <c>POST</c> (new file); when
+    /// it is provided the call is a <c>PUT</c> (update against that blob SHA).
+    /// <c>commit_message</c> is composed when omitted, per the issue #19 spec
+    /// (<c>Add {path}</c> for creates, <c>Update {path}</c> for updates).
+    /// </summary>
+    [McpServerTool(Name = "edit_file", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Creates or updates a single file. Omit `sha` for a new file (POST); provide the content-blob `sha` (from `get_file_contents` or `list_file_tree`) to update an existing file (PUT). `commit_message` is auto-composed when omitted — `Add {path}` for creates, `Update {path}` for updates. `branch` defaults to the repo's default branch when omitted. Returns `{commit_sha, commit_message, commit_html_url, file{sha,name,path,size,content}}`. Content is sent transparently base64-encoded — pass the file body as a plain string, not pre-encoded. Errors: `invalid_request` for blank owner/name/path, `not_found` (404, update against a path that doesn't exist), `conflict` (409, stale sha — re-read the file and retry with the current sha), `forbidden`/`unauthorized` for auth.")]
+    public async Task<string>
+        EditFile(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Repository-relative file path. Leading slash is tolerated.")] string path,
+        [Description("New file content as a plain UTF-8 string (the server encodes to base64 over the wire).")] string content,
+        [Description("Content-blob SHA to update against. Omit for CREATE — supply it for UPDATE (from `get_file_contents` or `list_file_tree`).")] string? sha = null,
+        [Description("Branch / ref. Optional — defaults to the repo's default branch.")] string? branch = null,
+        [Description("Commit message. Optional — auto-composed when omitted (\"Add {path}\" for creates, \"Update {path}\" for updates).")] string? commit_message = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            var isUpdate = !string.IsNullOrWhiteSpace(sha);
+            // Per issue #19 the default is `Add {path}` / `Update {path}` — the
+            // full repository-relative path (not just the leaf), so the commit
+            // message is unambiguous for deep trees. A caller-supplied
+            // commit_message always wins.
+            var message = string.IsNullOrWhiteSpace(commit_message)
+                ? (isUpdate ? $"Update {path}" : $"Add {path}")
+                : commit_message;
+            return await _client.CreateOrUpdateFileAsync(
+                owner, name, path, message, content, sha, branch, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Deletes one file (backing:
+    /// <c>DELETE /repos/{owner}/{name}/contents/{path}</c>).
+    /// The content-blob SHA is required.
+    /// </summary>
+    [McpServerTool(Name = "delete_file", Destructive = true, Idempotent = true, OpenWorld = true, ReadOnly = false)]
+    [Description("Deletes a single file via DELETE /repos/{o}/{n}/contents/{path}. `sha` is REQUIRED — the content-blob SHA from `get_file_contents` (not the commit sha). `branch` defaults to the repo's default branch. `commit_message` is auto-composed when omitted (\"Delete {path}\"). Idempotent per issue #19: deleting an already-deleted file is a 404, not a new action. Returns `{commit_sha, commit_message, commit_html_url}` (no `file` — the blob is gone). Errors: `invalid_request` for blank owner/name/path/sha, `not_found` (404, file does not exist on that ref), `conflict` (409, stale sha — re-read and retry), `forbidden`/`unauthorized` for auth.")]
+    public async Task<string>
+        DeleteFile(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string name,
+        [Description("Repository-relative file path.")] string path,
+        [Description("Content-blob SHA to delete (from `get_file_contents` or `list_file_tree`). REQUIRED.")] string sha,
+        [Description("Branch / ref. Optional — defaults to the repo's default branch.")] string? branch = null,
+        [Description("Commit message. Optional — auto-composed when omitted (\"Delete {path}\").")] string? commit_message = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            var message = string.IsNullOrWhiteSpace(commit_message)
+                ? $"Delete {path}"
+                : commit_message;
+            return await _client.DeleteFileAsync(
+                owner, name, path, sha, message, branch, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    // ------------------------------------------------------------------
     // Error handling: surface a stable, machine-readable error payload
     // instead of throwing (a throw yields a protocol error, which is a
     // different class of failure from "the API told us the object does

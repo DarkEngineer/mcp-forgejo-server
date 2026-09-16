@@ -751,3 +751,87 @@ public sealed record CreateMilestoneRequest
     /// </summary>
     public string? DueOn { get; init; }
 }
+
+// ----------------------------------------------------------------------
+// File-write ops (issue #19): read one file's contents / create / update /
+// delete. The success payload of the mutation endpoints is the same shape
+// across create / update / delete: a `commit` object plus, for the first
+// two, a `content` object echoing the stored blob.
+// ----------------------------------------------------------------------
+
+/// <summary>
+/// The stored content blob of a single file — the wire object behind
+/// <c>GET /repos/{o}/{n}/contents/{path}</c> (and nested under
+/// <c>content</c> in the create / update mutation response). <see cref="Sha"/>
+/// is the content-blob SHA that update / delete must echo back.
+/// </summary>
+public sealed record FileContents
+{
+    /// <summary>Content-blob SHA (7–40 hex) — supply it to update / delete.</summary>
+    public string? Sha { get; init; }
+
+    /// <summary>Leaf file name (last path segment).</summary>
+    public string? Name { get; init; }
+
+    /// <summary>Full repository-relative path of the file.</summary>
+    public string? Path { get; init; }
+
+    /// <summary>Size in bytes of the stored blob.</summary>
+    public long Size { get; init; }
+
+    /// <summary>Browser page for the file.</summary>
+    public string? HtmlUrl { get; init; }
+
+    /// <summary>
+    /// File contents, decoded from the wire's base64 <c>content</c> field
+    /// to UTF-8 text. Empty string when the wire field is absent.
+    /// </summary>
+    public string Content { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Result of a successful file create / update / delete. The mutation
+/// endpoints return a <c>commit</c> object (and a <c>content</c> object for
+/// create / update); this record projects both into a stable envelope.
+/// </summary>
+/// <remarks>
+/// Deserializing the raw wire payload into this record works because the
+/// snake_case naming policy (<see cref="SnakeCaseNamingPolicy"/>) maps
+/// <c>commitsha</c>→<see cref="CommitSha"/>, <c>commitmessage</c>→
+/// <see cref="CommitMessage"/>, <c>commithtmlurl</c>→<see cref="CommitHtmlUrl"/>,
+/// and <c>content</c>→<see cref="File"/> (nested into a <see cref="FileContents"/>).
+/// </remarks>
+public sealed record FileWriteResult
+{
+    /// <summary>SHA of the commit the mutation landed as.</summary>
+    public string? CommitSha { get; init; }
+
+    /// <summary>Message the commit was created with (as reported by the API).</summary>
+    public string? CommitMessage { get; init; }
+
+    /// <summary>Browser page for the commit.</summary>
+    public string? CommitHtmlUrl { get; init; }
+
+    /// <summary>The resulting stored blob (create / update); null for delete.</summary>
+    public FileContents? File { get; init; }
+}
+
+/// <summary>
+/// Raw wire payload of the file create / update / delete endpoints — NOT part
+/// of the stable public surface. Deserialized into <see cref="FileWriteResult"/>
+/// by the client (the wire nests commit + content; the stable envelope is
+/// flattened). Internal to the assembly.
+/// </summary>
+internal sealed record FileMutationWire
+{
+    public FileMutationWireCommit? Commit { get; init; }
+    public FileContents? Content { get; init; }
+}
+
+internal sealed record FileMutationWireCommit
+{
+    public string? Sha { get; init; }
+    public string? Message { get; init; }
+    public string? HtmlUrl { get; init; }
+}
+
