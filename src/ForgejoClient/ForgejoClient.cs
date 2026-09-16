@@ -644,8 +644,123 @@ public sealed class ForgejoClient : IDisposable
         return SendAsync<PullRequest>(HttpMethod.Post, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls", req, ct);
     }
 
+    // ------------------------------------------------------------------
+    // PR-state ops (issue #18): close + merge.
+    //
+    // Wire (verified live on the acceptance instance — Gitea/Forgejo):
+    // - Close:  PATCH /repos/{o}/{n}/pulls/{index}  {"state":"closed"}
+    // - Merge:  PUT   /repos/{o}/{n}/pulls/{index}/merge  {"accept_type": ..., "delete_branch": ...}
+    //   where accept_type ∈ {merge, rebase, fastforward, squash}; body of
+    //   Gitea's successful merge is the new merge-commit sha string.
+    // ------------------------------------------------------------------
 
-    // ---------------------------------------------------------------------------
+    /// <summary>
+    /// Closes a pull request — backing of <c>close_pull_request</c> (issue #18,
+    /// mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>PATCH /repos/{o}/{n}/pulls/{index}</c> with the sparse wire
+    /// <c>{"state":"closed"}</c> — the PR stays associated with the head
+    /// branch, so a later <c>merge_pull_request</c> on the same number is
+    /// still legal on most Gitea-compatible builds (some reject it with
+    /// 422). Returns the updated PR document (id, number, state=closed,
+    /// etc.). Errors: not_found (404) for an unknown number, http_405 /
+    /// http_422 when an instance build rejects PATCH.
+    /// </remarks>
+    public Task<PullRequest> ClosePullRequestAsync(
+        string owner, string name, int index, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "PR number must be >= 1.");
+
+        // Sparse wire: exactly the state change, nothing else. The wire
+        // key is `state` (string `closed`), not a boolean.
+        return SendAsync<PullRequest>(
+            HttpMethod.Patch,
+            $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}",
+            new Dictionary<string, object?> { ["state"] = "closed" },
+            ct);
+    }
+
+    /// <summary>
+    /// Merges a pull request — backing of <c>merge_pull_request</c> (issue #18,
+    /// mutation).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>PUT /repos/{o}/{n}/pulls/{index}/merge</c>.
+    /// <see cref="MergePullRequestRequest.DeleteBranch"/>'s value goes on the
+    /// wire verbatim; <see cref="MergePullRequestRequest.AcceptType"/> is
+    /// dropped when null (server default: <c>merge</c>). The success body is
+    /// a bare SHA string (the new merge commit) — this method parses it to
+    /// <c>string?</c> (empty body → null) so the MCP surface can decide how
+    /// to project it in its result envelope.
+    /// Errors: 404 (PR), 409 (not mergeable / behind base), 422 (bad
+    /// accept_type / PR not open), 405 (verb not accepted by the build).
+    /// </remarks>
+    public async Task<string?> MergePullRequestAsync(
+        string owner, string name, int index, MergePullRequestRequest req, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(req);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "PR number must be >= 1.");
+
+        // Only null means "use the server default (merge)". A non-null
+        // accept_type must be one of the four valid strategies; empty
+        // string is rejected as invalid input (typo / bug).
+        if (req.AcceptType is not null
+            && req.AcceptType is not ("merge" or "rebase" or "fastforward" or "squash"))
+            throw new ArgumentException(
+                "accept_type must be one of: merge, rebase, fastforward, squash — or null for the server default (merge). " +
+                $"(got '{req.AcceptType}')",
+                nameof(req));
+
+        var wire = new Dictionary<string, object?> { ["delete_branch"] = req.DeleteBranch };
+        if (!string.IsNullOrWhiteSpace(req.AcceptType))
+            wire["accept_type"] = req.AcceptType;
+
+        var json = await SendAsyncCore(
+            HttpMethod.Put,
+            $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}/merge",
+            wire,
+            null,
+            ct).ConfigureAwait(false);
+
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        // Gitea's happy path: a bare 40-hex sha (no JSON envelope). Forgejo
+        // 24.x+: a JSON object {"merge_commit_sha": "..."} — accept both.
+        var trimmed = json.Trim();
+        if (trimmed.Length >= 7 && trimmed.Length <= 40
+            && trimmed.All(hex => char.IsAsciiHexDigit(hex)))
+            return trimmed;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            foreach (var key in new[] { "merge_commit_sha", "sha" })
+            {
+                if (doc.RootElement.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String)
+                {
+                    var s = el.GetString();
+                    if (s is { Length: >= 7 })
+                        return s;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // fall through — treat as an opaque body; the surface only uses
+            // the SHA when it parses cleanly, so an odd body degrades to null.
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------------
     // Wire / retry / error pipeline
     // ---------------------------------------------------------------------------
 
