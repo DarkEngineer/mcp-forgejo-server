@@ -752,86 +752,59 @@ public sealed record CreateMilestoneRequest
     public string? DueOn { get; init; }
 }
 
-// ----------------------------------------------------------------------
-// File-write ops (issue #19): read one file's contents / create / update /
-// delete. The success payload of the mutation endpoints is the same shape
-// across create / update / delete: a `commit` object plus, for the first
-// two, a `content` object echoing the stored blob.
-// ----------------------------------------------------------------------
+/// <summary>
+/// Wire payload for PR-state mutations on the <c>/pulls/{index}</c> family
+/// (issue #18). The <c>close_pull_request</c> backing sends the sparse
+/// <c>{"state":"closed"}</c> body via PATCH; the <c>merge_pull_request</c>
+/// backing sends <c>accept_type</c> (when supplied) and
+/// <c>delete_branch</c> via PUT on <c>/pulls/{index}/merge</c>.
+/// </summary>
 
 /// <summary>
-/// The stored content blob of a single file — the wire object behind
-/// <c>GET /repos/{o}/{n}/contents/{path}</c> (and nested under
-/// <c>content</c> in the create / update mutation response). <see cref="Sha"/>
-/// is the content-blob SHA that update / delete must echo back.
+/// Wire payload for <see cref="ForgejoClient.MergePullRequestAsync"/>
+/// (<c>PUT /repos/{o}/{n}/pulls/{index}/merge</c>). <see cref="DeleteBranch"/>
+/// is the single wire key always sent (the default for this workflow is
+/// true); <see cref="AcceptType"/> is omitted when null (server default).
 /// </summary>
-public sealed record FileContents
+public sealed record MergePullRequestRequest
 {
-    /// <summary>Content-blob SHA (7–40 hex) — supply it to update / delete.</summary>
-    public string? Sha { get; init; }
+    /// <summary>
+    /// Merge strategy: <c>merge</c>, <c>rebase</c>, <c>fastforward</c>, or
+    /// <c>squash</c> (sent in <c>accept_type</c>). Omitted from the wire when
+    /// null / empty (server default; on Gitea this is <c>merge</c>).
+    /// </summary>
+    public string? AcceptType { get; init; }
 
-    /// <summary>Leaf file name (last path segment).</summary>
-    public string? Name { get; init; }
+    /// <summary>Delete the source branch on merge (defaults the tool to true; overridable).</summary>
+    public bool DeleteBranch { get; init; }
+}
 
-    /// <summary>Full repository-relative path of the file.</summary>
-    public string? Path { get; init; }
+/// <summary>
+/// Result envelope of the <c>merge_pull_request</c> tool (issue #18). The
+/// Gitea merge endpoint returns only the new merge commit <c>sha</c> — it
+/// does not echo a <c>PullRequest</c> document — so the tool reports the
+/// PR number, that the merge succeeded, a client-observed <c>merged_at</c>,
+/// the source branch ref, and (when the instance echoes 40+ hex chars as
+/// the body) the merge commit SHA.
+/// </summary>
+public sealed record MergePullRequestResult
+{
+    /// <summary>PR number within the repository (echoes the tool input).</summary>
+    public int Number { get; init; }
 
-    /// <summary>Size in bytes of the stored blob.</summary>
-    public long Size { get; init; }
+    /// <summary>Always true when the call resolved to a 2xx — the merge happened.</summary>
+    public bool Merged { get; init; }
 
-    /// <summary>Browser page for the file.</summary>
-    public string? HtmlUrl { get; init; }
+    /// <summary>Client-observed merge timestamp (the server does not echo one on this wire).</summary>
+    public DateTime MergedAt { get; init; }
+
+    /// <summary>Source (head) branch ref of the merged PR (echoes the tool input for context).</summary>
+    public string? HeadRef { get; init; }
 
     /// <summary>
-    /// File contents, decoded from the wire's base64 <c>content</c> field
-    /// to UTF-8 text. Empty string when the wire field is absent.
+    /// Merge commit SHA, when the instance's body yields a 7–40 hex string.
+    /// Populated when the body looks like a bare SHA; null otherwise.
     /// </summary>
-    public string Content { get; init; } = string.Empty;
-}
-
-/// <summary>
-/// Result of a successful file create / update / delete. The mutation
-/// endpoints return a <c>commit</c> object (and a <c>content</c> object for
-/// create / update); this record projects both into a stable envelope.
-/// </summary>
-/// <remarks>
-/// Deserializing the raw wire payload into this record works because the
-/// snake_case naming policy (<see cref="SnakeCaseNamingPolicy"/>) maps
-/// <c>commitsha</c>→<see cref="CommitSha"/>, <c>commitmessage</c>→
-/// <see cref="CommitMessage"/>, <c>commithtmlurl</c>→<see cref="CommitHtmlUrl"/>,
-/// and <c>content</c>→<see cref="File"/> (nested into a <see cref="FileContents"/>).
-/// </remarks>
-public sealed record FileWriteResult
-{
-    /// <summary>SHA of the commit the mutation landed as.</summary>
-    public string? CommitSha { get; init; }
-
-    /// <summary>Message the commit was created with (as reported by the API).</summary>
-    public string? CommitMessage { get; init; }
-
-    /// <summary>Browser page for the commit.</summary>
-    public string? CommitHtmlUrl { get; init; }
-
-    /// <summary>The resulting stored blob (create / update); null for delete.</summary>
-    public FileContents? File { get; init; }
-}
-
-/// <summary>
-/// Raw wire payload of the file create / update / delete endpoints — NOT part
-/// of the stable public surface. Deserialized into <see cref="FileWriteResult"/>
-/// by the client (the wire nests commit + content; the stable envelope is
-/// flattened). Internal to the assembly.
-/// </summary>
-internal sealed record FileMutationWire
-{
-    public FileMutationWireCommit? Commit { get; init; }
-    public FileContents? Content { get; init; }
-}
-
-internal sealed record FileMutationWireCommit
-{
-    public string? Sha { get; init; }
-    public string? Message { get; init; }
-    public string? HtmlUrl { get; init; }
+    public string? MergeCommit { get; init; }
 }
 

@@ -705,89 +705,80 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     // ------------------------------------------------------------------
-    // File-write ops (issue #19): get_file_contents / edit_file / delete_file.
-
+    // PR-state ops (issue #18): close + merge. Highest-priority gap per
+    // #16 — we can create_pull_request but until now had no way to finish
+    // the loop. Wire (verified against the acceptance instance):
+    //
+    //   close_pull_request → PATCH /repos/{o}/{n}/pulls/{index} {"state":"closed"}
+    //   merge_pull_request → PUT   /repos/{o}/{n}/pulls/{index}/merge {"accept_type":"…"?,"delete_branch":bool}
+    //
+    // Gitea's merge success body is the bare merge-commit sha string; the
+    // surface projects it (along with a client-observed merged_at, since the
+    // wire does not echo one) into the structured result below.
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Reads one file's metadata + decoded content (backing:
-    /// <c>GET /repos/{owner}/{name}/contents/{path}?ref={branch}</c>).
-    /// Returns the content-blob SHA (as <c>sha</c>) plus name, path, size,
-    /// html_url, and the decoded <c>content</c> string (base64 handled
-    /// transparently). The <c>sha</c> is what <c>edit_file</c> (update) and
-    /// <c>delete_file</c> must echo back.
+    /// Closes a pull request (backing: <c>PATCH /repos/{owner}/{name}/pulls/{index}</c>).
+    /// The head branch is preserved — a later <c>merge_pull_request</c> on
+    /// the same number is still legal on most Gitea-compatible builds.
+    /// Idempotent: closing an already-closed PR is a no-op state check,
+    /// not a new action. This is the one intentional annotation divergence
+    /// from the standard write pattern (called out in issue #18's README
+    /// note).
     /// </summary>
-    [McpServerTool(Name = "get_file_contents", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Reads a single file's metadata + content via GET /repos/{o}/{n}/contents/{path}?ref={branch}. Returns `{sha, name, path, size, html_url, content}` where `sha` is the content-blob SHA (required to update/delete via `edit_file` or `delete_file`) and `content` is the decoded file body (transparently decoded from the wire's base64). `branch` is optional and defaults to the repo's default branch. Errors: `not_found` (404) when the path does not exist on that ref.")]
+    [McpServerTool(Name = "close_pull_request", Destructive = true, Idempotent = true, OpenWorld = true, ReadOnly = false)]
+    [Description("Closes a pull request (PATCH /repos/{o}/{n}/pulls/{index} with state=closed). The PR number `index` is the same one `list_pull_requests` returns; the head branch is left in place (a later `merge_pull_request` on the same number is typically still legal). Idempotent — closing an already-closed PR is a no-op state check, not a new action. On success returns the updated PR document (id, number, state=closed, merged=false typically, base/head refs, …). Errors: `not_found` (404) for an unknown number; `forbidden`/`unauthorized` for auth; `http_405` / `http_422` if an instance build rejects PATCH (this instance accepts it live-verified).")]
     public async Task<string>
-        GetFileContents(
+        ClosePullRequest(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
-        [Description("Repository-relative file path (e.g. `src/Program.cs` or `docs/a.md`). Leading/slash is tolerated.")] string path,
-        [Description("Branch / ref to read from. Optional — defaults to the repo's default branch.")] string? branch = null,
+        [Description("PR number within the repository (>= 1) — the same number `list_pull_requests` returns.")] int index,
         CancellationToken cancellationToken = default)
         => await CallAsync(async () =>
         {
-            return await _client.GetFileContentsAsync(owner, name, path, branch, cancellationToken).ConfigureAwait(false);
+            return await _client.ClosePullRequestAsync(owner, name, index, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
 
     /// <summary>
-    /// Creates or updates one file (backing:
-    /// <c>POST</c>/<c>PUT /repos/{owner}/{name}/contents/{path}</c>).
-    /// When <c>sha</c> is omitted the call is a <c>POST</c> (new file); when
-    /// it is provided the call is a <c>PUT</c> (update against that blob SHA).
-    /// <c>commit_message</c> is composed when omitted, per the issue #19 spec
-    /// (<c>Add {path}</c> for creates, <c>Update {path}</c> for updates).
+    /// Merges a pull request (backing: <c>PUT /repos/{owner}/{name}/pulls/{index}/merge</c>).
+    /// <c>accept_type</c> is exposed as a tool parameter so squash-vs-rebase
+    /// isn't hard-wired — allowed values: <c>merge</c>, <c>rebase</c>,
+    /// <c>fastforward</c>, <c>squash</c>. <c>delete_branch</c> defaults to
+    /// <c>true</c> for this workflow (no separate branch-deletion tool exists;
+    /// issue #18), and is overridable to keep the branch.
     /// </summary>
-    [McpServerTool(Name = "edit_file", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
-    [Description("Creates or updates a single file. Omit `sha` for a new file (POST); provide the content-blob `sha` (from `get_file_contents` or `list_file_tree`) to update an existing file (PUT). `commit_message` is auto-composed when omitted — `Add {path}` for creates, `Update {path}` for updates. `branch` defaults to the repo's default branch when omitted. Returns `{commit_sha, commit_message, commit_html_url, file{sha,name,path,size,content}}`. Content is sent transparently base64-encoded — pass the file body as a plain string, not pre-encoded. Errors: `invalid_request` for blank owner/name/path, `not_found` (404, update against a path that doesn't exist), `conflict` (409, stale sha — re-read the file and retry with the current sha), `forbidden`/`unauthorized` for auth.")]
+    [McpServerTool(Name = "merge_pull_request", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
+    [Description("Merges a pull request (PUT /repos/{o}/{n}/pulls/{index}/merge). `accept_type` (optional) is one of `merge` (default when omitted), `rebase`, `fastforward`, or `squash`; `delete_branch` (optional, defaults to `true`) controls whether the source branch is removed after merge (the workflow in issue #18 treats the merge as the only cleanup path — no separate branch-deletion tool has shipped yet). On success the wire returns the new merge commit SHA string (on Gitea); the MCP surface projects it into the `merge_commit` field of the result envelope (plus `number`, `merged=true`, `merged_at` = client-observed timestamp since the wire does not echo one, and `head_ref` for context). Errors: `not_found` (404) for an unknown number, `conflict` (409) for a PR that is not mergeable / is behind the base, `http_422` for a bad `accept_type` or a PR that is not open, `http_405` if an instance build rejects PUT.")]
     public async Task<string>
-        EditFile(
+        MergePullRequest(
         [Description("Repository owner.")] string owner,
         [Description("Repository name.")] string name,
-        [Description("Repository-relative file path. Leading slash is tolerated.")] string path,
-        [Description("New file content as a plain UTF-8 string (the server encodes to base64 over the wire).")] string content,
-        [Description("Content-blob SHA to update against. Omit for CREATE — supply it for UPDATE (from `get_file_contents` or `list_file_tree`).")] string? sha = null,
-        [Description("Branch / ref. Optional — defaults to the repo's default branch.")] string? branch = null,
-        [Description("Commit message. Optional — auto-composed when omitted (\"Add {path}\" for creates, \"Update {path}\" for updates).")] string? commit_message = null,
+        [Description("PR number within the repository (>= 1).")] int index,
+        [Description("Merge strategy: 'merge' (default when omitted), 'rebase', 'fastforward', or 'squash'. Optional.")] string? accept_type = null,
+        [Description("Delete the source branch after merging. Defaults to `true` for this workflow (there is no separate branch-deletion tool yet); set to `false` to keep the branch. Optional.")] bool delete_branch = true,
+        [Description("Source (head) branch ref, echoed into the result for context (e.g. `feature/foo`). Optional — the surface uses it purely to populate `head_ref` in the envelope.")] string? head_ref = null,
         CancellationToken cancellationToken = default)
         => await CallAsync(async () =>
         {
-            var isUpdate = !string.IsNullOrWhiteSpace(sha);
-            // Per issue #19 the default is `Add {path}` / `Update {path}` — the
-            // full repository-relative path (not just the leaf), so the commit
-            // message is unambiguous for deep trees. A caller-supplied
-            // commit_message always wins.
-            var message = string.IsNullOrWhiteSpace(commit_message)
-                ? (isUpdate ? $"Update {path}" : $"Add {path}")
-                : commit_message;
-            return await _client.CreateOrUpdateFileAsync(
-                owner, name, path, message, content, sha, branch, cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
-
-    /// <summary>
-    /// Deletes one file (backing:
-    /// <c>DELETE /repos/{owner}/{name}/contents/{path}</c>).
-    /// The content-blob SHA is required.
-    /// </summary>
-    [McpServerTool(Name = "delete_file", Destructive = true, Idempotent = true, OpenWorld = true, ReadOnly = false)]
-    [Description("Deletes a single file via DELETE /repos/{o}/{n}/contents/{path}. `sha` is REQUIRED — the content-blob SHA from `get_file_contents` (not the commit sha). `branch` defaults to the repo's default branch. `commit_message` is auto-composed when omitted (\"Delete {path}\"). Idempotent per issue #19: deleting an already-deleted file is a 404, not a new action. Returns `{commit_sha, commit_message, commit_html_url}` (no `file` — the blob is gone). Errors: `invalid_request` for blank owner/name/path/sha, `not_found` (404, file does not exist on that ref), `conflict` (409, stale sha — re-read and retry), `forbidden`/`unauthorized` for auth.")]
-    public async Task<string>
-        DeleteFile(
-        [Description("Repository owner.")] string owner,
-        [Description("Repository name.")] string name,
-        [Description("Repository-relative file path.")] string path,
-        [Description("Content-blob SHA to delete (from `get_file_contents` or `list_file_tree`). REQUIRED.")] string sha,
-        [Description("Branch / ref. Optional — defaults to the repo's default branch.")] string? branch = null,
-        [Description("Commit message. Optional — auto-composed when omitted (\"Delete {path}\").")] string? commit_message = null,
-        CancellationToken cancellationToken = default)
-        => await CallAsync(async () =>
-        {
-            var message = string.IsNullOrWhiteSpace(commit_message)
-                ? $"Delete {path}"
-                : commit_message;
-            return await _client.DeleteFileAsync(
-                owner, name, path, sha, message, branch, cancellationToken).ConfigureAwait(false);
+            var req = new Forgejo.Client.MergePullRequestRequest
+            {
+                AcceptType = accept_type,
+                DeleteBranch = delete_branch,
+            };
+            // The Gitea merge endpoint returns just the merge-commit SHA
+            // string (or an empty body / a JSON object on some builds).
+            // Surface that SHA plus a client-observed merged_at — the wire
+            // does not echo one — so the envelope answers "did it merge,
+            // and with what result?".
+            var sha = await _client.MergePullRequestAsync(owner, name, index, req, cancellationToken).ConfigureAwait(false);
+            return new Forgejo.Client.MergePullRequestResult
+            {
+                Number = index,
+                Merged = true,
+                MergedAt = DateTime.UtcNow,
+                HeadRef = head_ref,
+                MergeCommit = sha,
+            };
         }, cancellationToken);
 
     // ------------------------------------------------------------------

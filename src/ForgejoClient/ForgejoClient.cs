@@ -645,191 +645,119 @@ public sealed class ForgejoClient : IDisposable
     }
 
     // ------------------------------------------------------------------
-    // File-write ops (issue #19): read one file / create / update / delete.
+    // PR-state ops (issue #18): close + merge.
     //
-    // Wire (Gitea/Forgejo contents endpoints):
-    // - Read:   GET    /repos/{o}/{n}/contents/{path}[?ref=...]
-    //   → a content document with `sha`, `name`, `path`, `size`,
-    //     `html_url`, and a base64 `content` field.
-    // - Create: POST   /repos/{o}/{n}/contents/{path}
-    //           {message, content(base64), branch?, sha?}
-    //   → {commit{sha,message,html_url}, content{sha,name,path,size,content}}
-    // - Update: PUT    /repos/{o}/{n}/contents/{path}
-    //           {message, content(base64), branch?, sha (required)}
-    //   → same success shape as create.
-    // - Delete: DELETE /repos/{o}/{n}/contents/{path}
-    //           {message, branch?, sha (required)}
-    //   → {commit{...}} only.
-    //
-    // base64 is handled transparently here (the surface takes string
-    // content); a stale sha surfaces as not_found (404) or conflict (409).
+    // Wire (verified live on the acceptance instance — Gitea/Forgejo):
+    // - Close:  PATCH /repos/{o}/{n}/pulls/{index}  {"state":"closed"}
+    // - Merge:  PUT   /repos/{o}/{n}/pulls/{index}/merge  {"accept_type": ..., "delete_branch": ...}
+    //   where accept_type ∈ {merge, rebase, fastforward, squash}; body of
+    //   Gitea's successful merge is the new merge-commit sha string.
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Reads one file's metadata + decoded content — backing of
-    /// <c>get_file_contents</c> (issue #19). The call returns the content-blob
-    /// <see cref="FileContents.Sha"/> that update / delete must echo back.
+    /// Closes a pull request — backing of <c>close_pull_request</c> (issue #18,
+    /// mutation).
     /// </summary>
-    /// <remarks>Back: <c>GET /repos/{o}/{n}/contents/{path}?ref={branch}</c>.</remarks>
-    public async Task<FileContents> GetFileContentsAsync(
-        string owner, string name, string path, string? branch = null, CancellationToken ct = default)
+    /// <remarks>
+    /// Back: <c>PATCH /repos/{o}/{n}/pulls/{index}</c> with the sparse wire
+    /// <c>{"state":"closed"}</c> — the PR stays associated with the head
+    /// branch, so a later <c>merge_pull_request</c> on the same number is
+    /// still legal on most Gitea-compatible builds (some reject it with
+    /// 422). Returns the updated PR document (id, number, state=closed,
+    /// etc.). Errors: not_found (404) for an unknown number, http_405 /
+    /// http_422 when an instance build rejects PATCH.
+    /// </remarks>
+    public Task<PullRequest> ClosePullRequestAsync(
+        string owner, string name, int index, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "PR number must be >= 1.");
 
-        var relative = path.StartsWith('/') ? path[1..] : path;
-        var qs = branch is null ? string.Empty : $"?ref={Uri.EscapeDataString(branch)}";
-        var json = await SendAsyncCore(
-            HttpMethod.Get, $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/contents/{relative}{qs}", null, null, ct).ConfigureAwait(false);
-
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        string GetString(string key)
-            => root.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
-                ? el.GetString() ?? string.Empty
-                : string.Empty;
-
-        var content = GetString("content");
-        string? decoded = null;
-        if (content.Length > 0)
-        {
-            try { decoded = Encoding.UTF8.GetString(Convert.FromBase64String(content)); }
-            catch (FormatException) { /* non-base64 (directory listing etc.) → leave undecoded */ }
-        }
-
-        return new FileContents
-        {
-            Sha = string.IsNullOrEmpty(GetString("sha")) ? null : GetString("sha"),
-            Name = string.IsNullOrEmpty(GetString("name")) ? null : GetString("name"),
-            Path = string.IsNullOrEmpty(GetString("path")) ? null : GetString("path"),
-            Size = root.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetInt64() : 0,
-            HtmlUrl = string.IsNullOrEmpty(GetString("html_url")) ? null : GetString("html_url"),
-            Content = decoded ?? string.Empty,
-        };
+        // Sparse wire: exactly the state change, nothing else. The wire
+        // key is `state` (string `closed`), not a boolean.
+        return SendAsync<PullRequest>(
+            HttpMethod.Patch,
+            $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}",
+            new Dictionary<string, object?> { ["state"] = "closed" },
+            ct);
     }
 
     /// <summary>
-    /// Creates (<see cref="HttpMethod.Post"/>) or updates
-    /// (<see cref="HttpMethod.Put"/>) one file — backing of <c>edit_file</c>
-    /// (issue #19). Pass a blank <paramref name="sha"/> to create; supply the
-    /// content-blob SHA to update an existing file.
+    /// Merges a pull request — backing of <c>merge_pull_request</c> (issue #18,
+    /// mutation).
     /// </summary>
-    /// <remarks>Back: <c>POST|PUT /repos/{o}/{n}/contents/{path}</c>.</remarks>
-    public async Task<FileWriteResult> CreateOrUpdateFileAsync(
-        string owner, string name, string path,
-        string message, string content, string? sha, string? branch,
-        CancellationToken ct = default)
+    /// <remarks>
+    /// Back: <c>PUT /repos/{o}/{n}/pulls/{index}/merge</c>.
+    /// <see cref="MergePullRequestRequest.DeleteBranch"/>'s value goes on the
+    /// wire verbatim; <see cref="MergePullRequestRequest.AcceptType"/> is
+    /// dropped when null (server default: <c>merge</c>). The success body is
+    /// a bare SHA string (the new merge commit) — this method parses it to
+    /// <c>string?</c> (empty body → null) so the MCP surface can decide how
+    /// to project it in its result envelope.
+    /// Errors: 404 (PR), 409 (not mergeable / behind base), 422 (bad
+    /// accept_type / PR not open), 405 (verb not accepted by the build).
+    /// </remarks>
+    public async Task<string?> MergePullRequestAsync(
+        string owner, string name, int index, MergePullRequestRequest req, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        ArgumentNullException.ThrowIfNull(req);
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "PR number must be >= 1.");
 
-        var relative = path.StartsWith('/') ? path[1..] : path;
-        var wire = new Dictionary<string, object?>
-        {
-            ["message"] = message,
-            ["content"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(content)),
-        };
-        if (!string.IsNullOrWhiteSpace(branch))
-            wire["branch"] = branch;
+        // Only null means "use the server default (merge)". A non-null
+        // accept_type must be one of the four valid strategies; empty
+        // string is rejected as invalid input (typo / bug).
+        if (req.AcceptType is not null
+            && req.AcceptType is not ("merge" or "rebase" or "fastforward" or "squash"))
+            throw new ArgumentException(
+                "accept_type must be one of: merge, rebase, fastforward, squash — or null for the server default (merge). " +
+                $"(got '{req.AcceptType}')",
+                nameof(req));
 
-        var isUpdate = !string.IsNullOrWhiteSpace(sha);
-        if (isUpdate)
-            wire["sha"] = sha;
-
-        var json = await SendAsyncCore(
-            isUpdate ? HttpMethod.Put : HttpMethod.Post,
-            $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/contents/{relative}",
-            wire, null, ct).ConfigureAwait(false);
-
-        return ProjectFileMutation(json);
-    }
-
-    /// <summary>
-    /// Deletes one file — backing of <c>delete_file</c> (issue #19).
-    /// The content-blob <paramref name="sha"/> is required by the API.
-    /// </summary>
-    /// <remarks>Back: <c>DELETE /repos/{o}/{n}/contents/{path}</c>.</remarks>
-    public async Task<FileWriteResult> DeleteFileAsync(
-        string owner, string name, string path, string sha, string message,
-        string? branch = null, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sha);
-        ArgumentException.ThrowIfNullOrWhiteSpace(message);
-
-        var relative = path.StartsWith('/') ? path[1..] : path;
-        var wire = new Dictionary<string, object?>
-        {
-            ["message"] = message,
-            ["sha"] = sha,
-        };
-        if (!string.IsNullOrWhiteSpace(branch))
-            wire["branch"] = branch;
+        var wire = new Dictionary<string, object?> { ["delete_branch"] = req.DeleteBranch };
+        if (!string.IsNullOrWhiteSpace(req.AcceptType))
+            wire["accept_type"] = req.AcceptType;
 
         var json = await SendAsyncCore(
-            HttpMethod.Delete,
-            $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/contents/{relative}",
-            wire, null, ct).ConfigureAwait(false);
+            HttpMethod.Put,
+            $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}/merge",
+            wire,
+            null,
+            ct).ConfigureAwait(false);
 
-        return ProjectFileMutation(json);
-    }
-
-    /// <summary>
-    /// Maps the <c>{commit{...}, content{...}}</c> mutation wire payload to the
-    /// flattened stable <see cref="FileWriteResult"/> envelope.
-    /// </summary>
-    private static FileWriteResult ProjectFileMutation(string json)
-    {
         if (string.IsNullOrWhiteSpace(json))
-            return new FileWriteResult();
+            return null;
 
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        // Gitea's happy path: a bare 40-hex sha (no JSON envelope). Forgejo
+        // 24.x+: a JSON object {"merge_commit_sha": "..."} — accept both.
+        var trimmed = json.Trim();
+        if (trimmed.Length >= 7 && trimmed.Length <= 40
+            && trimmed.All(hex => char.IsAsciiHexDigit(hex)))
+            return trimmed;
 
-        FileMutationWireCommit? commit = null;
-        if (root.TryGetProperty("commit", out var c) && c.ValueKind == JsonValueKind.Object)
+        try
         {
-            commit = new FileMutationWireCommit
+            using var doc = JsonDocument.Parse(json);
+            foreach (var key in new[] { "merge_commit_sha", "sha" })
             {
-                Sha = c.TryGetProperty("sha", out var es) ? es.GetString() : null,
-                Message = c.TryGetProperty("message", out var em) ? em.GetString() : null,
-                HtmlUrl = c.TryGetProperty("html_url", out var eu) ? eu.GetString() : null,
-            };
+                if (doc.RootElement.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String)
+                {
+                    var s = el.GetString();
+                    if (s is { Length: >= 7 })
+                        return s;
+                }
+            }
         }
-
-        FileContents? file = null;
-        if (root.TryGetProperty("content", out var ct2) && ct2.ValueKind == JsonValueKind.Object)
+        catch (JsonException)
         {
-            string? Str(string k) => ct2.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-            var raw = ct2.TryGetProperty("content", out var rc) && rc.ValueKind == JsonValueKind.String ? rc.GetString() ?? string.Empty : string.Empty;
-            string? decoded = null;
-            if (raw.Length > 0)
-                try { decoded = Encoding.UTF8.GetString(Convert.FromBase64String(raw)); }
-                catch (FormatException) { }
-            file = new FileContents
-            {
-                Sha = Str("sha"),
-                Name = Str("name"),
-                Path = Str("path"),
-                Size = ct2.TryGetProperty("size", out var rs) && rs.ValueKind == JsonValueKind.Number ? rs.GetInt64() : 0,
-                HtmlUrl = Str("html_url"),
-                Content = decoded ?? string.Empty,
-            };
+            // fall through — treat as an opaque body; the surface only uses
+            // the SHA when it parses cleanly, so an odd body degrades to null.
         }
-
-        return new FileWriteResult
-        {
-            CommitSha = commit?.Sha,
-            CommitMessage = commit?.Message,
-            CommitHtmlUrl = commit?.HtmlUrl,
-            File = file,
-        };
+        return null;
     }
 
     // ------------------------------------------------------------------
