@@ -17,8 +17,6 @@ if [ -z "${FORGEJO_API_URL:-}" ]; then
   FORGEJO_API_URL="${SERVER_URL%/}/api/v1"
 fi
 
-REPO="${GITHUB_REPOSITORY:-dark-eternity/mcp-forgejo-server}"
-
 # Pobieranie tagu z kontekstu runnera
 TAG="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 [ -n "$TAG" ] || { TAG="${GITHUB_REF#refs/tags/}"; : "${TAG:=$GITHUB_REF}"; }
