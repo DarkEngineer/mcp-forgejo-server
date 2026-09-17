@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+if [ -z "${GITHUB_REPOSITORY:-}" ]; then 
+  REPO="dark-eternity/mcp-forgejo-server"; 
+  else REPO="$GITHUB_REPOSITORY"; 
+fi
+
 : "${FORGEJO_TOKEN:?publish_release.sh: FORGEJO_TOKEN not set}"
 
 # Jeśli FORGEJO_API_URL nie jest ustawiony, spróbuj zbudować go ze standardowych zmiennych Actions
@@ -11,8 +16,6 @@ if [ -z "${FORGEJO_API_URL:-}" ]; then
   SERVER_URL="${GITHUB_SERVER_URL:-https://forgejo.example.com}"
   FORGEJO_API_URL="${SERVER_URL%/}/api/v1"
 fi
-
-REPO="${GITHUB_REPOSITORY:-dark-eternity/mcp-forgejo-server}"
 
 # Pobieranie tagu z kontekstu runnera
 TAG="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
