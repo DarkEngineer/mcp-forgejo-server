@@ -9,7 +9,8 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-permissions: {}
+permissions: 
+  contents: write
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
