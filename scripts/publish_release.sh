@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+if [ -z "${GITHUB_REPOSITORY:-}" ]; then 
+  REPO="dark-eternity/mcp-forgejo-server"; 
+  else REPO="$GITHUB_REPOSITORY"; 
+fi
+
 : "${FORGEJO_TOKEN:?publish_release.sh: FORGEJO_TOKEN not set}"
 
 # Jeśli FORGEJO_API_URL nie jest ustawiony, spróbuj zbudować go ze standardowych zmiennych Actions
