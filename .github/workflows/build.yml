@@ -9,6 +9,8 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
