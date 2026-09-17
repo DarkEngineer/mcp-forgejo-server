@@ -1,0 +1,61 @@
+name: Build & Publish
+
+# Tworzy pakiet przy każdym pushu do main.
+# Dla tagów v* (np. v1.0.0) tworzy wydanie (Release) w Forgejo i dodaje plik tar.gz wraz z .sha256.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+jobs:
+  build-and-publish:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve SDK
+        id: sdk
+        run: echo "version=$(grep -m1 TargetFramework src/ForgejoMcp/ForgejoMcp.csproj | sed -E 's/.*<TargetFramework>([^<]+)<.*/\1/' | sed -E 's/^net//')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Build, test, package
+        run: |
+          set -uo pipefail
+          bash scripts/package.sh
+          echo "--- dist output ---"
+          ls -la dist/
+          echo "--- sha256 sidecar ---"
+          cat dist/*.sha256
+
+      - name: Publish Forgejo release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          # Używamy wbudowanego tokena kontekstowego github.token
+          FORGEJO_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -uo pipefail
+          export RELEASE_TAG="${RELEASE_TAG:-${GITHUB_REF#refs/tags/}}"
+          : "${RELEASE_TAG?this step only runs on tag pushes; no tag name found}"
+          bash scripts/publish_release.sh
+
+      - name: List dist artifacts
+        run: ls -la dist/
