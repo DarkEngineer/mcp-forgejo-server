@@ -710,7 +710,7 @@ public sealed class ForgejoMcpToolSurface
     // the loop. Wire (verified against the acceptance instance):
     //
     //   close_pull_request → PATCH /repos/{o}/{n}/pulls/{index} {"state":"closed"}
-    //   merge_pull_request → PUT   /repos/{o}/{n}/pulls/{index}/merge {"accept_type":"…"?,"delete_branch":bool}
+    //   merge_pull_request → POST  /repos/{o}/{n}/pulls/{index}/merge {"Do":"…"?,"delete_branch":bool}
     //
     // Gitea's merge success body is the bare merge-commit sha string; the
     // surface projects it (along with a client-observed merged_at, since the
@@ -740,15 +740,16 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     /// <summary>
-    /// Merges a pull request (backing: <c>PUT /repos/{owner}/{name}/pulls/{index}/merge</c>).
-    /// <c>accept_type</c> is exposed as a tool parameter so squash-vs-rebase
+    /// Merges a pull request (backing: <c>POST /repos/{owner}/{name}/pulls/{index}/merge</c> with a <c>Do</c> strategy field).
+    /// <c>accept_type</c> (stable MCP parameter — sent as <c>Do</c> on the wire) is
+    /// exposed as a tool parameter so squash-vs-rebase
     /// isn't hard-wired — allowed values: <c>merge</c>, <c>rebase</c>,
     /// <c>fastforward</c>, <c>squash</c>. <c>delete_branch</c> defaults to
     /// <c>true</c> for this workflow (no separate branch-deletion tool exists;
     /// issue #18), and is overridable to keep the branch.
     /// </summary>
     [McpServerTool(Name = "merge_pull_request", Destructive = true, Idempotent = false, OpenWorld = true, ReadOnly = false)]
-    [Description("Merges a pull request (PUT /repos/{o}/{n}/pulls/{index}/merge). `accept_type` (optional) is one of `merge` (default when omitted), `rebase`, `fastforward`, or `squash`; `delete_branch` (optional, defaults to `true`) controls whether the source branch is removed after merge (the workflow in issue #18 treats the merge as the only cleanup path — no separate branch-deletion tool has shipped yet). On success the wire returns the new merge commit SHA string (on Gitea); the MCP surface projects it into the `merge_commit` field of the result envelope (plus `number`, `merged=true`, `merged_at` = client-observed timestamp since the wire does not echo one, and `head_ref` for context). Errors: `not_found` (404) for an unknown number, `conflict` (409) for a PR that is not mergeable / is behind the base, `http_422` for a bad `accept_type` or a PR that is not open, `http_405` if an instance build rejects PUT.")]
+    [Description("Merges a pull request (POST /repos/{o}/{n}/pulls/{index}/merge with a `Do` strategy field). `accept_type` (optional, stable MCP name — sent as `Do` on the wire) is one of `merge` (default when omitted), `rebase`, `fastforward`, or `squash`; `delete_branch` (optional, defaults to `true`) controls whether the source branch is removed after merge. On success the wire returns the new merge commit SHA string; the MCP surface projects it into the `merge_commit` field of the result envelope (plus `number`, `merged=true`, `merged_at` = client-observed timestamp, and `head_ref` for context). Errors: `not_found` (404) for an unknown number, `conflict` (409) for a PR that is not mergeable / is behind the base, `http_422` for a bad strategy or a PR that is not open; a 405 from the instance can carry a *policy* message (e.g. \"not enough approvals\") — that is the instance requiring an approval before merges, not a wire error (issue #45).")]
     public async Task<string>
         MergePullRequest(
         [Description("Repository owner.")] string owner,
