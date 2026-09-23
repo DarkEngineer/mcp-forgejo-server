@@ -649,9 +649,11 @@ public sealed class ForgejoClient : IDisposable
     //
     // Wire (verified live on the acceptance instance — Gitea/Forgejo):
     // - Close:  PATCH /repos/{o}/{n}/pulls/{index}  {"state":"closed"}
-    // - Merge:  PUT   /repos/{o}/{n}/pulls/{index}/merge  {"accept_type": ..., "delete_branch": ...}
-    //   where accept_type ∈ {merge, rebase, fastforward, squash}; body of
+    // - Merge:  POST  /repos/{o}/{n}/pulls/{index}/merge  {"Do": ..., "delete_branch": ...}
+    //   where Do ∈ {merge, rebase, fastforward, squash}; body of
     //   Gitea's successful merge is the new merge-commit sha string.
+    //   (PUT + accept_type is a deprecated Gitea v1.16 shape — current builds
+    //   reject it with 405. POST + Do verified: 200 on approved PRs.)
     // ------------------------------------------------------------------
 
     /// <summary>
@@ -689,15 +691,25 @@ public sealed class ForgejoClient : IDisposable
     /// mutation).
     /// </summary>
     /// <remarks>
-    /// Back: <c>PUT /repos/{o}/{n}/pulls/{index}/merge</c>.
+    /// Back: <c>POST /repos/{o}/{n}/pulls/{index}/merge</c> with a
+    /// <c>{"Do": &lt;strategy&gt;, "delete_branch": &lt;bool&gt;}</c> body. The
+    /// strategy field is <c>Do</c> (Gitea/Forgejo's wire name) and the verb is
+    /// <c>POST</c>; older Gitea v1.16 docs showed a deprecated
+    /// <c>PUT</c>-based contract with <c>accept_type</c>, which current
+    /// builds (e.g. the git.home.internal Forgejo) reject with 405
+    /// MethodNotAllowed. Verified live: <c>POST + {"Do":"merge"}</c> → 200,
+    /// while <c>PUT + {"accept_type":"merge"}</c> → 405.
     /// <see cref="MergePullRequestRequest.DeleteBranch"/>'s value goes on the
-    /// wire verbatim; <see cref="MergePullRequestRequest.AcceptType"/> is
-    /// dropped when null (server default: <c>merge</c>). The success body is
+    /// wire verbatim; <see cref="MergePullRequestRequest.AcceptType"/> (the
+    /// stable MCP parameter name) is sent as <c>Do</c> only when non-null
+    /// (server default: <c>merge</c>). The success body is
     /// a bare SHA string (the new merge commit) — this method parses it to
     /// <c>string?</c> (empty body → null) so the MCP surface can decide how
     /// to project it in its result envelope.
     /// Errors: 404 (PR), 409 (not mergeable / behind base), 422 (bad
-    /// accept_type / PR not open), 405 (verb not accepted by the build).
+    /// strategy / PR not open); 405 can also carry a policy message from the
+    /// instance (e.g. "not enough approvals" — that is working as intended,
+    /// not a wire error).
     /// </remarks>
     public async Task<string?> MergePullRequestAsync(
         string owner, string name, int index, MergePullRequestRequest req, CancellationToken ct = default)
@@ -720,10 +732,10 @@ public sealed class ForgejoClient : IDisposable
 
         var wire = new Dictionary<string, object?> { ["delete_branch"] = req.DeleteBranch };
         if (!string.IsNullOrWhiteSpace(req.AcceptType))
-            wire["accept_type"] = req.AcceptType;
+            wire["Do"] = req.AcceptType;
 
         var json = await SendAsyncCore(
-            HttpMethod.Put,
+            HttpMethod.Post,
             $"/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}/pulls/{index}/merge",
             wire,
             null,

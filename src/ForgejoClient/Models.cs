@@ -756,22 +756,24 @@ public sealed record CreateMilestoneRequest
 /// Wire payload for PR-state mutations on the <c>/pulls/{index}</c> family
 /// (issue #18). The <c>close_pull_request</c> backing sends the sparse
 /// <c>{"state":"closed"}</c> body via PATCH; the <c>merge_pull_request</c>
-/// backing sends <c>accept_type</c> (when supplied) and
-/// <c>delete_branch</c> via PUT on <c>/pulls/{index}/merge</c>.
+/// backing sends <c>Do</c> (the merge strategy, set from the stable
+/// <c>accept_type</c> tool parameter) and <c>delete_branch</c> via POST on
+/// <c>/pulls/{index}/merge</c>.
 /// </summary>
 
 /// <summary>
 /// Wire payload for <see cref="ForgejoClient.MergePullRequestAsync"/>
-/// (<c>PUT /repos/{o}/{n}/pulls/{index}/merge</c>). <see cref="DeleteBranch"/>
+/// (<c>POST /repos/{o}/{n}/pulls/{index}/merge</c>). <see cref="DeleteBranch"/>
 /// is the single wire key always sent (the default for this workflow is
-/// true); <see cref="AcceptType"/> is omitted when null (server default).
+/// true); <see cref="AcceptType"/> is omitted from the wire when null
+/// (server default) and otherwise sent as the <c>Do</c> key.
 /// </summary>
 public sealed record MergePullRequestRequest
 {
     /// <summary>
     /// Merge strategy: <c>merge</c>, <c>rebase</c>, <c>fastforward</c>, or
-    /// <c>squash</c> (sent in <c>accept_type</c>). Omitted from the wire when
-    /// null / empty (server default; on Gitea this is <c>merge</c>).
+    /// <c>squash</c> (sent in the wire key <c>Do</c>). Omitted from the wire
+    /// when null / empty (server default; on Gitea this is <c>merge</c>).
     /// </summary>
     public string? AcceptType { get; init; }
 

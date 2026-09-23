@@ -96,10 +96,10 @@ public class ForgejoMcpPrStateToolSurfaceTests
 
         var req = handler.Requests.Single();
         Assert.Equal("/api/v1/repos/o/n/pulls/42/merge", req.RequestUri!.AbsolutePath);
-        Assert.Equal("PUT", req.Method.Method);
+        Assert.Equal("POST", req.Method.Method);
         using var body = JsonDocument.Parse(handler.Bodies.Single());
         Assert.True(body.RootElement.GetProperty("delete_branch").GetBoolean());
-        Assert.False(body.RootElement.TryGetProperty("accept_type", out _));
+        Assert.False(body.RootElement.TryGetProperty("Do", out _));
 
         using var doc = JsonDocument.Parse(json);
         Assert.True(doc.RootElement.GetProperty("merged").GetBoolean());
@@ -117,7 +117,7 @@ public class ForgejoMcpPrStateToolSurfaceTests
         await surface.MergePullRequest("o", "n", 42, accept_type: acceptType, delete_branch: false);
 
         using var body = JsonDocument.Parse(handler.Bodies.Single());
-        Assert.Equal(acceptType, body.RootElement.GetProperty("accept_type").GetString());
+        Assert.Equal(acceptType, body.RootElement.GetProperty("Do").GetString());
         Assert.False(body.RootElement.GetProperty("delete_branch").GetBoolean());
     }
 
