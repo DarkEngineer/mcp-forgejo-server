@@ -8,7 +8,7 @@ The server exposes Forgejo operations as MCP **tools** and **resources**, so
 any MCP client (e.g. IDE agents, Hermes) can drive a Forgejo instance via
 simple text prompts.
 
-Current release: **v3.1.0** — 29 named tools, 177 tests, self-contained
+Current release: **v3.1.1** — 31 named tools, 198 tests, self-contained
 `linux-x64` release packages.
 
 The repository also serves as a **template** for building your own MCP servers
@@ -171,6 +171,8 @@ The server speaks MCP v2024-11-05 over **stdio** (line-delimited, JSON-RPC
 | `get_milestone`            | Get one milestone (by global id)         |
 | `create_milestone`         | Create a milestone                       |
 | `list_releases`            | List releases; per-release metadata + assets |
+| `search_repos`             | Search repos instance-wide (cross-org; `list_repos` is user-scoped) — v3.2 |
+| `search_code`              | Search code (`search_disabled` on instances without the code index) — v3.2 |
 | `get_file`                 | Raw file content at a ref                |
 | `get_file_contents`        | Structured contents response (json/base64, + sha) |
 | `list_file_tree`           | List / recurse the file tree             |
@@ -203,7 +205,10 @@ returned by `get_file_contents` as a precondition; a stale sha → typed
 Errors are reported as JSON-RPC `{error:{code,...,message}}` payloads.
 `code` is a lowered HTTP status (e.g. `not_found` for 404) or a stable
 domain error name (`label_not_found`, `precondition_failed`, `no_fields`,
-`branch_exists`…) — clients can react deterministically.
+`branch_exists`, `search_disabled`…) — clients can react deterministically.
+`search_disabled` is the capability-level signal for the search tools:
+the instance does not serve the route (403/404), so the caller should not
+retry and should fall back to the `list_*` tools.
 
 ## Notes
 

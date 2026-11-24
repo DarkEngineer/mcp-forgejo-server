@@ -961,6 +961,141 @@ public sealed class ForgejoClient : IDisposable
     }
 
     // ------------------------------------------------------------------
+    // Search (issue #38): search_repos + search_code.
+    //
+    // Wire (verified via the instance's swagger + live probes,
+    // 2026-11-24 — git.home.internal 16.0.3+gitea-1.22.0):
+    // - Repo search: GET /repos/search?q=...&sort=...&order=...&limit=...
+    //   → the SearchResults envelope {ok: bool, data: Repository[]} —
+    //   NOT the bare array the list endpoints use. Results are scoped to
+    //   the repositories the calling identity can see (authenticated:
+    //   its repos incl. private; anonymous: public only — verified: an
+    //   anonymous search returns ok=true with data=[], the same query
+    //   with a token returns the matching repos). `total` is best
+    //   effort: the x-total-count header is present on some response
+    //   paths and absent on others, so ListResult.Total may be null.
+    // - Code search: GET /repos/search/code?q=...&owner=...&repo=...
+    //   — NOT served on the acceptance instance: every candidate route
+    //   404s and the instance's swagger carries no code-search path.
+    //   The client surfaces that as SearchDisabledException → the MCP
+    //   surface's typed `search_disabled` error (issue #38 contract:
+    //   "403/404 on disabled instance feature returns a typed
+    //   search_disabled error, not a crash").
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Searches repositories instance-wide — backing of the
+    /// <c>search_repos</c> MCP tool (issue #38). Unlike
+    /// <see cref="ListRepositoriesAsync"/> (user-scoped
+    /// <c>GET /user/repos</c>), this finds repositories in any
+    /// organization the calling identity can see.
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/search?q=…&amp;sort=…&amp;order=…&amp;limit=…</c>. The
+    /// response is the <c>{ok, data[]}</c> SearchResults envelope; this
+    /// method parses it into the standard <see cref="ListResult{T}"/>
+    /// shape (items + count + total + next_page) so the MCP payload
+    /// matches every other list tool. <paramref name="sort"/> and
+    /// <paramref name="order"/> are pass-through — the instance
+    /// validates them (sort: alpha/created/updated/size/git_size/
+    /// lfs_size/id/stars/forks; order: asc/desc) and answers 422 for
+    /// anything else. <paramref name="limit"/> is expected pre-clamped
+    /// by the caller (the MCP surface clamps to 1…100).
+    /// Errors: <see cref="SearchDisabledException"/> when the instance
+    /// does not serve the route (403/404); 422 for a bad sort value.
+    /// </remarks>
+    public Task<ListResult<Repository>> SearchRepositoriesAsync(
+        string query, string? sort, string? order, int page, int limit, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        if (page < 1)
+            throw new ArgumentOutOfRangeException(nameof(page), page, "page must be >= 1.");
+        if (limit < 1)
+            throw new ArgumentOutOfRangeException(nameof(limit), limit, "limit must be >= 1.");
+        var q = "q=" + Uri.EscapeDataString(query) + "&page=" + page + "&limit=" + limit;
+        if (!string.IsNullOrWhiteSpace(sort))
+            q += "&sort=" + Uri.EscapeDataString(sort);
+        if (!string.IsNullOrWhiteSpace(order))
+            q += "&order=" + Uri.EscapeDataString(order);
+        return SendSearchAsync<Repository>("/repos/search", q, page, limit, ct);
+    }
+
+    /// <summary>
+    /// Searches code — backing of the <c>search_code</c> MCP tool
+    /// (issue #38).
+    /// </summary>
+    /// <remarks>
+    /// Back: <c>GET /repos/search/code?q=…&amp;owner=…&amp;repo=…&amp;limit=…</c>
+    /// (the Gitea 1.22 code-search route). The acceptance instance does
+    /// not serve this route (verified 2026-11-24: 404 on every candidate
+    /// route; no code-search path in the instance's swagger), so calls
+    /// against it surface <see cref="SearchDisabledException"/> — the
+    /// MCP <c>search_disabled</c> error. On instances that DO run the
+    /// code-search indexer, the <c>{ok, data[]}</c> entries are passed
+    /// through verbatim as JSON nodes (the per-build result shape
+    /// varies, so no fixed projection is applied).
+    /// </remarks>
+    public Task<ListResult<JsonNode>> SearchCodeAsync(
+        string q, string? owner, string? repo, int limit, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(q);
+        if (limit < 1)
+            throw new ArgumentOutOfRangeException(nameof(limit), limit, "limit must be >= 1.");
+        var query = "q=" + Uri.EscapeDataString(q) + "&limit=" + limit;
+        if (!string.IsNullOrWhiteSpace(owner))
+            query += "&owner=" + Uri.EscapeDataString(owner);
+        if (!string.IsNullOrWhiteSpace(repo))
+            query += "&repo=" + Uri.EscapeDataString(repo);
+        return SendSearchAsync<JsonNode>("/repos/search/code", query, 1, limit, ct);
+    }
+
+    /// <summary>
+    /// Shared pipeline for the search endpoints: GET with a pre-built
+    /// query string, parse the <c>{ok, data[]}</c> SearchResults
+    /// envelope (tolerating a bare top-level array on other builds),
+    /// map 403/404 to <see cref="SearchDisabledException"/>, and project
+    /// the paging metadata (x-total-count header, plus the Link /
+    /// full-page heuristic via <see cref="ComputeNextPage"/>).
+    /// </summary>
+    private async Task<ListResult<T>> SendSearchAsync<T>(string path, string query, int page, int pageLimit, CancellationToken ct)
+    {
+        string json;
+        long? total;
+        string? link;
+        try
+        {
+            (json, total, link) = await SendAsyncCoreWithTotal(
+                HttpMethod.Get, AppendQuery(path, query), null, null, ct).ConfigureAwait(false);
+        }
+        catch (ForgejoException e) when (e.StatusCode is 404 or 403)
+        {
+            // Route not served (or the identity barred from it): a
+            // capability-level failure, not a missing object. Typed so
+            // the MCP surface maps it to `search_disabled` instead of
+            // not_found / forbidden (issue #38).
+            throw new SearchDisabledException(
+                $"{PathOnly(path)} is not served by this Forgejo instance (HTTP {e.StatusCode}) — " +
+                "the search capability is disabled or unknown on this build. Do not retry; use the " +
+                "list_* tools instead.",
+                e.StatusCode, e.ResponseBody, e);
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        // This instance answers {"ok":true,"data":[...]}; other builds
+        // may answer a bare array — tolerate both.
+        var dataEl = root.ValueKind == JsonValueKind.Array
+            ? root
+            : root.GetProperty("data");
+        var items = ForgejoJson.FromJson<IReadOnlyList<T>>(dataEl.GetRawText())
+            ?? throw new ForgejoException($"Search response for {PathOnly(path)} carried no usable `data` array.");
+        return new ListResult<T>(items, total)
+        {
+            NextPageHint = ComputeNextPage(new Page { Number = page, Size = pageLimit }, link, items.Count),
+        };
+    }
+
+    // ------------------------------------------------------------------
     // Wire / retry / error pipeline
     // ---------------------------------------------------------------------------
 
