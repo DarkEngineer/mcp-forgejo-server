@@ -105,8 +105,10 @@ public class ForgejoMcpSearchToolSurfaceTests
         var req = handler.Requests.Single();
         Assert.Equal(HttpMethod.Get, req.Method);
         Assert.Equal("/api/v1/repos/search", req.RequestUri!.AbsolutePath);
-        // Default limit (20) + the query, URL-escaped, on the wire.
+        // Default page (1) + default limit (20) + the query, URL-escaped,
+        // on the wire.
         Assert.Contains("q=mcp", req.RequestUri.Query);
+        Assert.Matches(@"[?&]page=1(&|$)", req.RequestUri.Query);
         Assert.Contains("limit=20", req.RequestUri.Query);
 
         using var doc = System.Text.Json.JsonDocument.Parse(json);
@@ -182,6 +184,31 @@ public class ForgejoMcpSearchToolSurfaceTests
         var query = handler.Requests.Single().RequestUri!.Query;
         Assert.DoesNotContain("sort=", query);
         Assert.DoesNotContain("order=", query);
+    }
+
+    [Fact]
+    public async Task SearchRepos_page_passes_through_on_the_wire()
+    {
+        var (surface, handler) = Build(new[] { Ok(SearchResultsJson) });
+
+        await surface.SearchRepos("mcp", page: 3);
+
+        Assert.Matches(@"[?&]page=3(&|$)", handler.Requests.Single().RequestUri!.Query);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-2)]
+    public async Task SearchRepos_page_below_1_fails_fast_with_invalid_request_and_no_http(int page)
+    {
+        var (surface, handler) = Build();
+
+        var json = await surface.SearchRepos("mcp", page: page);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal("invalid_request",
+            doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Empty(handler.Requests);
     }
 
     [Theory]

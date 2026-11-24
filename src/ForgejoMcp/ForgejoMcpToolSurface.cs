@@ -891,18 +891,21 @@ public sealed class ForgejoMcpToolSurface
     /// organization the token can see.
     /// </summary>
     [McpServerTool(Name = "search_repos", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
-    [Description("Searches repositories across the whole instance (GET /repos/search?q=…) — unlike list_repos (user-scoped /user/repos), this finds repos in any org the token can see. `query` is a free-form keyword (matches repo names/descriptions of the repos visible to the token). `sort` is pass-through — one of alpha, created, updated, size, git_size, lfs_size, id, stars, forks (the instance's enum; invalid values 422), `order` is asc or desc, `limit` defaults to 20 and is clamped to 1…100. Returns the standard list envelope: `items` (repository objects), `count`, `total` (when the instance reports it), `next_page`. An empty result is an empty `items` list, not an error. Errors: `search_disabled` when the instance does not serve the search route (403/404), `invalid_request` for a blank query.")]
+    [Description("Searches repositories across the whole instance (GET /repos/search?q=…) — unlike list_repos (user-scoped /user/repos), this finds repos in any org the token can see. `query` is a free-form keyword (matches repo names/descriptions of the repos visible to the token). `sort` is pass-through — one of alpha, created, updated, size, git_size, lfs_size, id, stars, forks (the instance's enum; invalid values 422), `order` is asc or desc, `page` is the 1-based result page (default 1), `limit` defaults to 20 and is clamped to 1…100. Returns the standard list envelope: `items` (repository objects), `count`, `total` (when the instance reports it), `next_page`. An empty result is an empty `items` list, not an error. Errors: `search_disabled` when the instance does not serve the search route (403/404), `invalid_request` for a blank query.")]
     public async Task<string> SearchRepos(
         [Description("Free-form keyword to search repositories by (name/description).")] string query,
         [Description("Sort attribute, pass-through: alpha, created, updated, size, git_size, lfs_size, id, stars, or forks (the instance's enum). Optional.")] string? sort = null,
         [Description("Sort order: asc or desc (the instance default, asc, applies when omitted). Optional.")] string? order = null,
-        [Description("Maximum number of repositories to return (default 20; clamped to 1…100).")] int? limit = null,
+        [Description("1-based page number of the result page to fetch (default 1).")] int page = 1,
+        [Description("Maximum number of repositories to return per page (default 20; clamped to 1…100).")] int? limit = null,
         CancellationToken cancellationToken = default)
         => await CallAsync(async () =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(query, nameof(query));
+            if (page < 1)
+                throw new ArgumentOutOfRangeException(nameof(page), page, "page must be >= 1.");
             var clamped = limit switch { null => 20, < 1 => 1, > 100 => 100, _ => limit.Value };
-            return await _client.SearchRepositoriesAsync(query, sort, order, clamped, cancellationToken).ConfigureAwait(false);
+            return await _client.SearchRepositoriesAsync(query, sort, order, page, clamped, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
 
     /// <summary>

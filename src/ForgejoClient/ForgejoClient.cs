@@ -991,7 +991,7 @@ public sealed class ForgejoClient : IDisposable
     /// organization the calling identity can see.
     /// </summary>
     /// <remarks>
-    /// Back: <c>GET /repos/search?q=…&sort=…&order=…&limit=…</c>. The
+    /// Back: <c>GET /repos/search?q=…&amp;sort=…&amp;order=…&amp;limit=…</c>. The
     /// response is the <c>{ok, data[]}</c> SearchResults envelope; this
     /// method parses it into the standard <see cref="ListResult{T}"/>
     /// shape (items + count + total + next_page) so the MCP payload
@@ -1005,17 +1005,19 @@ public sealed class ForgejoClient : IDisposable
     /// does not serve the route (403/404); 422 for a bad sort value.
     /// </remarks>
     public Task<ListResult<Repository>> SearchRepositoriesAsync(
-        string query, string? sort, string? order, int limit, CancellationToken ct = default)
+        string query, string? sort, string? order, int page, int limit, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        if (page < 1)
+            throw new ArgumentOutOfRangeException(nameof(page), page, "page must be >= 1.");
         if (limit < 1)
             throw new ArgumentOutOfRangeException(nameof(limit), limit, "limit must be >= 1.");
-        var q = "q=" + Uri.EscapeDataString(query) + "&limit=" + limit;
+        var q = "q=" + Uri.EscapeDataString(query) + "&page=" + page + "&limit=" + limit;
         if (!string.IsNullOrWhiteSpace(sort))
             q += "&sort=" + Uri.EscapeDataString(sort);
         if (!string.IsNullOrWhiteSpace(order))
             q += "&order=" + Uri.EscapeDataString(order);
-        return SendSearchAsync<Repository>("/repos/search", q, limit, ct);
+        return SendSearchAsync<Repository>("/repos/search", q, page, limit, ct);
     }
 
     /// <summary>
@@ -1023,7 +1025,7 @@ public sealed class ForgejoClient : IDisposable
     /// (issue #38).
     /// </summary>
     /// <remarks>
-    /// Back: <c>GET /repos/search/code?q=…&owner=…&repo=…&limit=…</c>
+    /// Back: <c>GET /repos/search/code?q=…&amp;owner=…&amp;repo=…&amp;limit=…</c>
     /// (the Gitea 1.22 code-search route). The acceptance instance does
     /// not serve this route (verified 2026-11-24: 404 on every candidate
     /// route; no code-search path in the instance's swagger), so calls
@@ -1044,7 +1046,7 @@ public sealed class ForgejoClient : IDisposable
             query += "&owner=" + Uri.EscapeDataString(owner);
         if (!string.IsNullOrWhiteSpace(repo))
             query += "&repo=" + Uri.EscapeDataString(repo);
-        return SendSearchAsync<JsonNode>("/repos/search/code", query, limit, ct);
+        return SendSearchAsync<JsonNode>("/repos/search/code", query, 1, limit, ct);
     }
 
     /// <summary>
@@ -1055,7 +1057,7 @@ public sealed class ForgejoClient : IDisposable
     /// the paging metadata (x-total-count header, plus the Link /
     /// full-page heuristic via <see cref="ComputeNextPage"/>).
     /// </summary>
-    private async Task<ListResult<T>> SendSearchAsync<T>(string path, string query, int pageLimit, CancellationToken ct)
+    private async Task<ListResult<T>> SendSearchAsync<T>(string path, string query, int page, int pageLimit, CancellationToken ct)
     {
         string json;
         long? total;
@@ -1089,7 +1091,7 @@ public sealed class ForgejoClient : IDisposable
             ?? throw new ForgejoException($"Search response for {PathOnly(path)} carried no usable `data` array.");
         return new ListResult<T>(items, total)
         {
-            NextPageHint = ComputeNextPage(new Page { Number = 1, Size = pageLimit }, link, items.Count),
+            NextPageHint = ComputeNextPage(new Page { Number = page, Size = pageLimit }, link, items.Count),
         };
     }
 

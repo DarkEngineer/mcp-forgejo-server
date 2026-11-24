@@ -8,7 +8,7 @@ The server exposes Forgejo operations as MCP **tools** and **resources**, so
 any MCP client (e.g. IDE agents, Hermes) can drive a Forgejo instance via
 simple text prompts.
 
-Current release: **v3.1.1** — 31 named tools, 195 tests, self-contained
+Current release: **v3.1.1** — 31 named tools, 198 tests, self-contained
 `linux-x64` release packages.
 
 The repository also serves as a **template** for building your own MCP servers
