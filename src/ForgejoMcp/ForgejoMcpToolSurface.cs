@@ -869,6 +869,65 @@ public sealed class ForgejoMcpToolSurface
         }, cancellationToken);
 
     // ------------------------------------------------------------------
+    // Search (issue #38): search_repos + search_code.
+    //
+    // Contract (verified via the instance's swagger + live probes,
+    // 2026-11-24, git.home.internal 16.0.3+gitea-1.22.0):
+    // - search_repos → GET /repos/search?q=…&sort=…&order=…&limit=…
+    //   (served; results scoped to repos the token can see —
+    //   anonymous callers get the public subset).
+    // - search_code  → GET /repos/search/code?q=…&owner=…&repo=…
+    //   (NOT served on this instance — every candidate code-search
+    //   route 404s and the swagger carries no such path). The client
+    //   maps that 403/404 to SearchDisabledException, which the
+    //   CallAsync envelope below turns into the typed `search_disabled`
+    //   error instead of a crash (issue #38 acceptance criterion).
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Searches repositories across the whole instance (backing:
+    /// <c>GET /repos/search?q=…</c>) — unlike <c>list_repos</c>
+    /// (user-scoped <c>/user/repos</c>), this finds repos in any
+    /// organization the token can see.
+    /// </summary>
+    [McpServerTool(Name = "search_repos", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Searches repositories across the whole instance (GET /repos/search?q=…) — unlike list_repos (user-scoped /user/repos), this finds repos in any org the token can see. `query` is a free-form keyword (matches repo names/descriptions of the repos visible to the token). `sort` is pass-through — one of alpha, created, updated, size, git_size, lfs_size, id, stars, forks (the instance's enum; invalid values 422), `order` is asc or desc, `limit` defaults to 20 and is clamped to 1…100. Returns the standard list envelope: `items` (repository objects), `count`, `total` (when the instance reports it), `next_page`. An empty result is an empty `items` list, not an error. Errors: `search_disabled` when the instance does not serve the search route (403/404), `invalid_request` for a blank query.")]
+    public async Task<string> SearchRepos(
+        [Description("Free-form keyword to search repositories by (name/description).")] string query,
+        [Description("Sort attribute, pass-through: alpha, created, updated, size, git_size, lfs_size, id, stars, or forks (the instance's enum). Optional.")] string? sort = null,
+        [Description("Sort order: asc or desc (the instance default, asc, applies when omitted). Optional.")] string? order = null,
+        [Description("Maximum number of repositories to return (default 20; clamped to 1…100).")] int? limit = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(query, nameof(query));
+            var clamped = limit switch { null => 20, < 1 => 1, > 100 => 100, _ => limit.Value };
+            return await _client.SearchRepositoriesAsync(query, sort, order, clamped, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>
+    /// Searches code (backing: <c>GET /repos/search/code?q=…</c>).
+    /// The acceptance instance does not serve this route (verified
+    /// 2026-11-24), so against it the tool always answers the typed
+    /// <c>search_disabled</c> error; on instances with the
+    /// code-search indexer enabled, entries are returned verbatim.
+    /// </summary>
+    [McpServerTool(Name = "search_code", Destructive = false, Idempotent = true, OpenWorld = true, ReadOnly = true)]
+    [Description("Searches code (GET /repos/search/code?q=…). `q` is the code keyword; `owner` and `repo` narrow the search (both optional); `limit` defaults to 20 and is clamped to 1…100. NOTE: this acceptance instance (git.home.internal, Forgejo 16.0.3+gitea-1.22.0) does not serve any code-search route — verified: 404 on /repos/search/code and no code-search path in the instance's swagger — so against it the tool returns the typed error `search_disabled` (do not retry; the capability is off on this build). On instances that run the code-search indexer, results are passed through verbatim as the instance returns them (the per-build entry shape varies), in the standard list envelope (`items`, `count`, `next_page`). Errors: `search_disabled` (route 403/404), `invalid_request` for a blank query.")]
+    public async Task<string> SearchCode(
+        [Description("Code keyword to search for.")] string q,
+        [Description("Restrict the search to this repository owner (optional).")] string? owner = null,
+        [Description("Restrict the search to this repository name (optional).")] string? repo = null,
+        [Description("Maximum number of results to return (default 20; clamped to 1…100).")] int? limit = null,
+        CancellationToken cancellationToken = default)
+        => await CallAsync(async () =>
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(q, nameof(q));
+            var clamped = limit switch { null => 20, < 1 => 1, > 100 => 100, _ => limit.Value };
+            return await _client.SearchCodeAsync(q, owner, repo, clamped, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    // ------------------------------------------------------------------
     // Error handling: surface a stable, machine-readable error payload
     // instead of throwing (a throw yields a protocol error, which is a
     // different class of failure from "the API told us the object does
@@ -881,6 +940,10 @@ public sealed class ForgejoMcpToolSurface
         {
             var value = await apiCall().ConfigureAwait(false);
             return ForgejoJson.ToJson(value);
+        }
+        catch (SearchDisabledException e)
+        {
+            return ErrorJson("search_disabled", e.Message);
         }
         catch (ForgejoException e)
         {
